@@ -35,7 +35,9 @@ class TextExtractor:
         num_pages = len(pdf_reader.pages)
         for page_num in range(num_pages):
             page = pdf_reader.pages[page_num]
+            page.extract_text()
             self.text.append(page.extract_text())
+            self.phrases.append(page.extract_text())
 
     def _extract_text_from_pptx(self, file_content):
         pptx_file = io.BytesIO(file_content)
@@ -118,6 +120,7 @@ if __name__ == '__main__':
     uploaded_files = TextExtractor.read_files_to_uploaded(['./电路CLASSES.pdf'], )
     extractor = TextExtractor(uploaded_files, test=False)
     extractor.extract_text()
-    print(extractor.extract_phrases())
+    print(extractor.phrases[:20])
+    #print(extractor.extract_phrases())
     #extractor.separatedChineseCharacters()
     #extractor.printDF()
