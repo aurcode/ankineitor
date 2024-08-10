@@ -66,7 +66,7 @@ class TextExtractor:
         print('Len:', len(self.text))
         print(self.text[:num])
 
-    def print_DF(self, head=True, num = 10):
+    def print_DF(self, num = 10, head=True):
         if head:
             print(self.df.head(num))
         else:
