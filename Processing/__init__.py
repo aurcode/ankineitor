@@ -1,2 +1,3 @@
 from Processing.TextExtractor import TextExtractor
-from Processing.TextProcessor import AudioCreator, DataTransformer, DataIterator
+from Processing.TextProcessor import AudioCreator, DataTransformer
+from Processing.DataProcessor import DataProcessor
