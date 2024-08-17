@@ -10,7 +10,7 @@ import pinyin.cedict
 from datetime import datetime
 
 class AudioCreator:
-    def __init__(self, folder_name: str = './audios-super/', language: str ='zh'):
+    def __init__(self, folder_name: str = './audios/', language: str ='zh'):
         self.folder_name: str = folder_name
         self.language: str = language
         self.paths: List[str] = []
@@ -86,32 +86,3 @@ class DataTransformer:
         print('Transformation finished')
 
         self.df = df[self.columns]
-
-class DataIterator:
-    def __init__(self):
-        pass
-
-    def iterate_data(self, df):
-        for index, row in df.iterrows():
-            if str(row['created_y']) != 'nan':
-                df.loc[index, 'created'] = row['created_y']
-            if str(row['created_x']) != 'nan':
-                df.loc[index, 'created'] = row['created_x']
-            if str(row['pinyin_x']) != 'nan':
-                df.loc[index, 'pinyin'] = row['pinyin_x']
-            if str(row['part_y']) != 'nan':
-                df.loc[index, 'part'] = row['part_y']
-            if str(row['pinyin_y']) != 'nan':
-                df.loc[index, 'pinyin'] = row['pinyin_y']
-        df = df.drop(columns=['created_x', 'pinyin_x', 'created_y', 'pinyin_y'])
-        return df
-
-    def diff_data(self, original_df, new_df):
-        original_df = pd.read_csv('classes.csv')
-        new_df = original_df.merge(new_df, left_on=['hanzi', 'mean'], right_on=['hanzi', 'mean'], how='outer', indicator=True)
-        new_words = new_df.loc[new_df._merge == 'right_only'].drop(columns=['_merge'])
-        new_df = new_df.drop(columns=['_merge'])
-        new_df = self.iterate_data(new_df)
-        new_words = self.iterate_data(new_words)
-        return new_df, new_words
-
