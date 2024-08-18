@@ -54,7 +54,8 @@ class DeckGenerator:
 
     def add_notes_to_decks(self):
         for index, row in self.df.iterrows():
-            media_name = self.file(row['path'])
+            media_name = self.file(row['audio'][2:])
+            print(media_name[2:])
             if media_name != '.mp3':
                 self.media_list.append(media_name)
                 sound_name = '[sound:' + media_name + ']'
@@ -68,8 +69,8 @@ class DeckGenerator:
     def create_note(self, row, sound_name, note_type):
         tags = [
             note_type,
-            'lession:' + str(row['lession']),
-            'date:' + str(row['created']),
+            #'lession:' + str(row['lession']),
+            'date:' + str(row['time']),
             "@AURCODE"
         ]
         return genanki.Note(
@@ -78,7 +79,7 @@ class DeckGenerator:
             fields=[
                 str(row['hanzi']),
                 str(row['pinyin']),
-                str(row['mean']),
+                str(row['translation']),
                 str(row['part']),
                 sound_name,
                 '@AURCODE',
