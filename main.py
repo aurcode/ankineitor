@@ -2,6 +2,7 @@ from Processing import TextExtractor
 from Processing import DataTransformer
 from Processing import DataProcessor
 from Ankineitor import DeckGenerator
+#from Ankineitor import 
 
 test = True
 
@@ -22,20 +23,12 @@ test = True
 
 #name_new_df = dataProcessor.save_df()
 #print('name_new_df')
-dataProcessor2 = DataProcessor("history/undefined-2024-8-18.csv")#DataProcessor(name_new_df)
+#dataProcessorDF = DataProcessor("history/undefined-2024-8-18.csv")#DataProcessor(name_new_df)
 
-DataProcessor.print_DF(dataProcessor2.df,3)
+dataProcessorDF = DataProcessor("history/testing.txt")
+DataProcessor.print_DF(dataProcessorDF.df,3)
 
-generator = DeckGenerator(
-    dataProcessor2.df, 
-    "tester", 
-    "testomg", 
-    './templates/chinese/style.css', 
-    './templates/chinese/front.html', 
-    #'./templates/chinese/front_audio.html', 
-    './templates/chinese/back.html',
-    "output/testing.apkg"
-)
+generator = DeckGenerator(dataProcessorDF.df)
 generator.generate_decks()
 
 #diff_data 

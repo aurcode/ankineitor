@@ -1,85 +1,76 @@
-import tqdm
-import random
 import genanki
+from tqdm import tqdm
+#from .preconfigurations import CHINESE as CONFIG
+from .preconfigurations import PHOTO_PHOTO_BASIC as CONFIG
+
+#class CardsGenerator:
 
 class DeckGenerator:
-    def __init__(self, df, anki_deck_title, anki_model_name, model_style_file, model_front_file, model_back_file, deck_filename):
-        self.df = df
-        self.anki_deck_title = anki_deck_title
-        self.anki_model_name = anki_model_name
-        self.model_style = self.read_file(model_style_file)
-        self.model_front = self.read_file(model_front_file)
-        self.model_back = self.read_file(model_back_file)
-        self.deck_filename = deck_filename
-        self.model_id = random.randrange(1 << 30, 1 << 31)
-        self.file = lambda text: str(text) + '-zh.mp3'
-        self.media_list = []
-        self.model = self.create_model(self.model_id, "character")
-        self.my_deck = genanki.Deck(self.model_id, self.anki_deck_title)
+    def __init__(self, df):
+        self.columns = list(df.columns)
+        self.anki_cards = df.to_dict(orient='index')
+        self.media_list = list()
+        self.model = self.create_model()
+        self.my_deck = genanki.Deck(CONFIG['basics']['id'], CONFIG['basics']['deck_title'])
 
-    def read_file(self, filepath):
-        with open(filepath, 'r', encoding='utf-8') as file:
-            return file.read()
-
-    def create_model(self, model_id, template_name):
+    def create_model(self, select_model: str = 'main'):
         return genanki.Model(
-            model_id,
-            self.anki_model_name,
-            fields=[
-                {"name": "Simplified"},
-                {"name": "Pinyin"},
-                {"name": "Meaning"},
-                {"name": "Part"},
-                {"name": "Audio"},
-                {"name": "developed_by"},
-                {"name": "type"},
-            ],
-            templates=[
-                {
-                    "name": template_name,
-                    "qfmt": self.model_front,
-                    "afmt": self.model_back,
-                }
-            ],
-            css=self.model_style
+            CONFIG['basics']['id'],
+            CONFIG['basics']['model_name'],
+            fields=CONFIG['model_fields'],
+            templates=CONFIG['model_templates'][select_model],
+            css=CONFIG['model_templates']['css']
         )
 
-    def add_notes_to_decks(self):
-        for index, row in tqdm(self.df.iterrows(), total=self.df.shape[0]):
-            media_name = self.file(row['audio'])
-            if media_name != '.mp3':
-                self.media_list.append(media_name)
-                sound_name = '[sound:' + media_name.split('/')[-1] + ']'
-                note_character = self.create_note(row, sound_name, "reading")
-                self.my_deck.add_note(note_character)
+    def __build_media(self):
+        media_columns = [col for col in self.columns if 'audio' in col.lower() or 'image' in col.lower()]
+        for key, entry in tqdm(self.anki_cards.items()):
+            for media_col in media_columns:
+                if media_col in entry:
+                    filename = entry[media_col]
+                    self.media_list.append(filename)
+                    if '.mp3' in filename:
+                        self.anki_cards[key][media_col] = '[sound:' + filename.split('/')[-1] + ']'
+                    if '.png' in filename or '.jpg' in filename:
+                        self.anki_cards[key][media_col] = filename.split('/')[-1]
 
-    def create_note(self, row, sound_name, note_type):
-        tags = [
-            note_type,
-            #'lession:' + str(row['lession']),
-            'time:' + str(row['time']),
-            "@AURCODE"
-        ]
+    def create_notes(self, model: genanki.Model):
+        self.__build_media()
+        for card in tqdm(self.anki_cards):
+            self.my_deck.add_note(self._create_note(model, self.anki_cards[card]))
+
+    def __build_tags(self, card):
+        tags = list()
+        if 'time' in self.columns:
+            tags.append('time:' + card['time'])
+        if 'lesson' in self.columns:
+            tags.append('lesson:' + str(card['lesson']))
+
+        return tags
+
+    def __build_fields(self, card):
+        return [card[i] for i in CONFIG['model_builder'] ]
+
+    def _create_note(self, model: genanki.Model, card):
+        tags = self.__build_tags(card)
+        fields = self.__build_fields(card)
+
+        for i in ['@AURCODE', CONFIG['basics']['note_type']]:
+            tags.append(i)
+            fields.append(i)
+
         return genanki.Note(
-            model=self.model,
+            model=model,
             tags=tags,
-            fields=[
-                str(row['hanzi']),
-                str(row['pinyin']),
-                str(row['translation']),
-                str(row['part']),
-                sound_name,
-                '@AURCODE',
-                note_type
-            ]
+            fields=fields
         )
 
     def write_decks_to_file(self):
         my_package = genanki.Package(self.my_deck)
         my_package.media_files = self.media_list
-        my_package.write_to_file(self.deck_filename)
+        my_package.write_to_file(CONFIG['basics']['filename'])
 
     def generate_decks(self):
-        self.add_notes_to_decks()
+        self.create_notes(self.model)
         self.write_decks_to_file()
         print(self.media_list)
