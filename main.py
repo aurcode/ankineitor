@@ -22,7 +22,7 @@ test = True
 
 #name_new_df = dataProcessor.save_df()
 #print('name_new_df')
-dataProcessor2 = DataProcessor("undefined-2024-8-18.csv")#DataProcessor(name_new_df)
+dataProcessor2 = DataProcessor("history/undefined-2024-8-18.csv")#DataProcessor(name_new_df)
 
 DataProcessor.print_DF(dataProcessor2.df,3)
 
@@ -32,9 +32,9 @@ generator = DeckGenerator(
     "testomg", 
     './templates/chinese/style.css', 
     './templates/chinese/front.html', 
-    './templates/chinese/front_audio.html', 
+    #'./templates/chinese/front_audio.html', 
     './templates/chinese/back.html',
-    "testing"
+    "output/testing.apkg"
 )
 generator.generate_decks()
 
