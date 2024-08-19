@@ -1,6 +1,8 @@
 # Custom
 audio*
 *.pdf
+history/
+output/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
