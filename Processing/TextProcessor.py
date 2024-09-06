@@ -14,6 +14,10 @@ import pinyin
 import pinyin.cedict
 from datetime import datetime
 
+#import sys
+#sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../utils')))
+from Utils import MongoDBClient
+
 class AudioCreator:
     def __init__(self, folder_name: str = os.getenv('AUDIO_PATH'), language: str ='zh'):
         self.folder_name: str = folder_name
@@ -42,7 +46,7 @@ class AudioCreator:
             self.paths.append(path)
 
 class DataTransformer:
-    def __init__(self, pinyin = True, translation = False, audio = False, time = False, test = bool(os.getenv('DEBUG')), lan_in = 'zh-CN', lan_out = 'es'):
+    def __init__(self, pinyin = True, translation = False, audio = False, time = False, test = os.getenv('DEBUG'), lan_in = 'zh-CN', lan_out = 'es'):
         self.pinyin = pinyin
         self.translation = translation
         self.audio = audio
@@ -52,9 +56,7 @@ class DataTransformer:
 
         self.columns: List[str] = ['hanzi'] + list([i for i in['pinyin', 'translation', 'audio', 'time'] if self.__dict__.get(i) is True])
 
-        print(test)
         self.test = test
-        print(self.test)
         if self.test:
             self.max_i = 3
 
@@ -72,14 +74,15 @@ class DataTransformer:
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
             if self.translation:
                 translation_google = ''
-                if not self.test:
-                    translation_google = GoogleTranslator(source=self.lan_in, target=self.lan_out).translate(row['hanzi'])
+                #if not self.test:
+                translation_google = GoogleTranslator(source=self.lan_in, target=self.lan_out).translate(row['hanzi'])
                 extra_mean = pinyin.cedict.translate_word(row['hanzi'])
-                df.loc[index, 'translation'] = '. Extra mean: '.join(
-                    [
-                        translation_google,
-                        ' | '.join(extra_mean)]
-                )
+                if extra_mean:
+                    extra_mean = '. Extra mean: ' + ' | '.join(extra_mean)
+                else:
+                    extra_mean = ''
+                print(extra_mean)
+                df.loc[index, 'translation'] = translation_google + extra_mean
 
             if self.pinyin:
                 df.loc[index, 'pinyin'] = pinyin.get(row['hanzi'], delimiter=" ")
