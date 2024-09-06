@@ -1,3 +1,8 @@
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 import io
 import re
 import PyPDF2
@@ -7,12 +12,11 @@ import pandas as pd
 import jieba.posseg as pseg
 
 class TextExtractor:
-    def __init__(self, uploaded_files: List[str], test: bool = False):
+    def __init__(self, uploaded_files: List[str], test: bool = os.getenv('DEBUG')):
         self.test: bool = test
         self.uploaded_files: List[str] = uploaded_files
         self.text: Union[str, List] = []
         self.phrases: List[str] = []
-        self.df: pd.DataFrame = pd.DataFrame([])
 
     def extract_text(self):
         for file_name, file_content in self.uploaded_files.items():
@@ -71,10 +75,11 @@ class TextExtractor:
 
         df_aux=pd.DataFrame(seg_list, columns=["hanzi", "part"])
         df_aux['frequency'] = df_aux['hanzi'].map(df_aux['hanzi'].value_counts())
-        self.df = pd.merge(df, df_aux, on='hanzi', how='left')[['hanzi','part_x','frequency']].drop_duplicates(subset='hanzi').rename(columns={'part_x':'part'}).sort_values(by='frequency', ascending=False).reset_index(drop=True)
 
         if phrases:
             self.phrases = self.extract_phrases()
+
+        return pd.merge(df, df_aux, on='hanzi', how='left')[['hanzi','part_x','frequency']].drop_duplicates(subset='hanzi').rename(columns={'part_x':'part'}).sort_values(by='frequency', ascending=False).reset_index(drop=True)
 
     def extract_phrases(self, split_n: int = 12, min_characters_n = 6):
         text_new = self._format_text(self.text, split_n)

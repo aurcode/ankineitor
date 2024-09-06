@@ -1,3 +1,8 @@
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 from tqdm import tqdm
 import pandas as pd
 import os
@@ -10,7 +15,7 @@ import pinyin.cedict
 from datetime import datetime
 
 class AudioCreator:
-    def __init__(self, folder_name: str = './audios/', language: str ='zh'):
+    def __init__(self, folder_name: str = os.getenv('AUDIO_PATH'), language: str ='zh'):
         self.folder_name: str = folder_name
         self.language: str = language
         self.paths: List[str] = []
@@ -37,8 +42,7 @@ class AudioCreator:
             self.paths.append(path)
 
 class DataTransformer:
-    def __init__(self, pinyin = True, translation = False, audio = False, time = False, test = False, lan_in = 'zh-CN', lan_out = 'es'):
-        self.df: pd.DataFrame
+    def __init__(self, pinyin = True, translation = False, audio = False, time = False, test = bool(os.getenv('DEBUG')), lan_in = 'zh-CN', lan_out = 'es'):
         self.pinyin = pinyin
         self.translation = translation
         self.audio = audio
@@ -48,7 +52,9 @@ class DataTransformer:
 
         self.columns: List[str] = ['hanzi'] + list([i for i in['pinyin', 'translation', 'audio', 'time'] if self.__dict__.get(i) is True])
 
+        print(test)
         self.test = test
+        print(self.test)
         if self.test:
             self.max_i = 3
 
@@ -85,4 +91,4 @@ class DataTransformer:
 
         print('Transformation finished')
 
-        self.df = df[self.columns]
+        return df[self.columns]
