@@ -1,0 +1,13 @@
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    ports:
+      - "27017:27017"  # Map MongoDB port to the host
+    volumes:
+      - ${MONGO_DATA_PATH}:/data/db  # Persist data between container restarts
+    env_file:
+      - .env  # Load environment variables from the .env file
+
+volumes:
+  mongodb_data:

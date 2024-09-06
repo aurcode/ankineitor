@@ -46,7 +46,7 @@ PHOTO_PHOTO_BASIC = {
         {"name": "ImageFront"},
         {"name": "ImageBack"},
         {"name": "developed_by"},
-        {"name": "type"},
+        {"name": "image-image"},
     ],
     'model_templates': {
          'main': [
