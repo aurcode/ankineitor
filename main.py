@@ -27,17 +27,18 @@ def main():
         df1 = te.separated_chinese_characters()
         stu.print_DF(df1, title='Extracted Chinese Characters')
 
-        transformer = DataTransformer(pinyin = True, translation = False, audio = False, time = True)
+        df1, hsk = DataUtils().filter_dataframe(df1)
+
+        stu.print_DF(hsk, title='Filtered Words')
+        stu.print_DF(df1, title='DF')
+
+        transformer = DataTransformer(pinyin = True, translation = True, audio = True, time = True)
         df2 = transformer.transform_data(df1['hanzi'])
         stu.print_DF(df2, title='DataTransformer')
 
         df = DataUtils().combine_dataframes(df1, df2, 'hanzi')
         stu.print_DF(df, title='Combinator')
 
-        df, hsk = DataUtils().filter_dataframe(df)
-
-        stu.print_DF(hsk, title='Filtered Words')
-        stu.print_DF(df, title='New DF')
 
     #name_new_df = DataUtils.save_df(df, '电路')
     #print(name_new_df)
