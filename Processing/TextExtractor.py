@@ -34,7 +34,6 @@ class TextExtractor:
         pdf_reader = PyPDF2.PdfReader(pdf_file)
         num_pages = len(pdf_reader.pages)
         if self.test:
-            print("Test mode")
             max_page: int = 3
             page_count: int = 0
         for page_num in range(num_pages):
@@ -51,7 +50,6 @@ class TextExtractor:
         pptx_file = io.BytesIO(file_content)
         presentation = Presentation(pptx_file)
         if self.test:
-            print("Test mode")
             max_page: int = 3
             page_count: int = 0
         for slide in presentation.slides:

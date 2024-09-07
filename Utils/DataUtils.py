@@ -77,7 +77,6 @@ class DataUtils:
 
         return df_new, df_fil
 
-
     @classmethod
     def iterate_data(cls, df):
         for index, row in df.iterrows():

@@ -1,25 +1,24 @@
 import genanki
 from tqdm import tqdm
-#from .preconfigurations import CHINESE as CONFIG
-from .preconfigurations import PHOTO_PHOTO_BASIC as CONFIG
 
 #class CardsGenerator:
 
 class DeckGenerator:
-    def __init__(self, df):
+    def __init__(self, df, config):
         self.columns = list(df.columns)
         self.anki_cards = df.to_dict(orient='index')
         self.media_list = list()
+        self.CONFIG = config
         self.model = self.create_model()
-        self.my_deck = genanki.Deck(CONFIG['basics']['id'], CONFIG['basics']['deck_title'])
+        self.my_deck = genanki.Deck(self.CONFIG['basics']['id'], self.CONFIG['basics']['deck_title'])
 
     def create_model(self, select_model: str = 'main'):
         return genanki.Model(
-            CONFIG['basics']['id'],
-            CONFIG['basics']['model_name'],
-            fields=CONFIG['model_fields'],
-            templates=CONFIG['model_templates'][select_model],
-            css=CONFIG['model_templates']['css']
+            self.CONFIG['basics']['id'],
+            self.CONFIG['basics']['model_name'],
+            fields=self.CONFIG['model_fields'],
+            templates=self.CONFIG['model_templates'][select_model],
+            css=self.CONFIG['model_templates']['css']
         )
 
     def __build_media(self):
@@ -49,13 +48,13 @@ class DeckGenerator:
         return tags
 
     def __build_fields(self, card):
-        return [card[i] for i in CONFIG['model_builder'] ]
+        return [card[i] for i in self.CONFIG['model_builder'] ]
 
     def _create_note(self, model: genanki.Model, card):
         tags = self.__build_tags(card)
         fields = self.__build_fields(card)
 
-        for i in ['@AURCODE', CONFIG['basics']['note_type']]:
+        for i in ['@AURCODE', self.CONFIG['basics']['note_type']]:
             tags.append(i)
             fields.append(i)
 
@@ -68,9 +67,10 @@ class DeckGenerator:
     def write_decks_to_file(self):
         my_package = genanki.Package(self.my_deck)
         my_package.media_files = self.media_list
-        my_package.write_to_file(CONFIG['basics']['filename'])
+        my_package.write_to_file(self.CONFIG['basics']['filename'])
 
     def generate_decks(self):
         self.create_notes(self.model)
         self.write_decks_to_file()
         print(self.media_list)
+        return self.CONFIG['basics']['filename']

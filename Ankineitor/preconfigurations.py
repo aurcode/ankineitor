@@ -1,4 +1,7 @@
 import random
+from dotenv import load_dotenv
+import os
+load_dotenv()
 
 def read_file(filepath):
       with open(filepath, 'r', encoding='utf-8') as file:
@@ -9,7 +12,7 @@ CHINESE = {
         'id': random.randrange(1<<30,1<<31),
         'deck_title': 'tester',
         'model_name': 'testomg',
-        'filename': 'output/testing.apkg',
+        'filename': f'{os.getenv('ANKIFILE')}testing.apkg',
         'note_type': 'reading'
     },
     'model_fields': [
@@ -39,7 +42,7 @@ PHOTO_PHOTO_BASIC = {
         'id': random.randrange(1<<30,1<<31),
         'deck_title': 'testing for image',
         'model_name': 'image_image',
-        'filename': 'output/testing_image.apkg',
+        'filename': f'{os.getenv('ANKIFILE')}testing_image.apkg',
         'note_type': 'study'
     },
     'model_fields': [
