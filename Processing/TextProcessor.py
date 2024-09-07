@@ -1,8 +1,6 @@
 from dotenv import load_dotenv
 import os
-
 load_dotenv()
-
 from tqdm import tqdm
 import pandas as pd
 import os
@@ -46,11 +44,12 @@ class AudioCreator:
             self.paths.append(path)
 
 class DataTransformer:
-    def __init__(self, pinyin = True, translation = False, audio = False, time = False, test = os.getenv('DEBUG'), lan_in = 'zh-CN', lan_out = 'es'):
+    def __init__(self, pinyin = True, translation = False, audio = False, time = False, save = True, test = os.getenv('DEBUG'), lan_in = 'zh-CN', lan_out = 'es'):
         self.pinyin = pinyin
         self.translation = translation
         self.audio = audio
         self.time = time
+        self.save = save
         self.lan_in = lan_in
         self.lan_out = lan_out
 
@@ -58,7 +57,9 @@ class DataTransformer:
 
         self.test = test
         if self.test:
-            self.max_i = 3
+            self.max_i = 20
+
+        self.mongo_client = MongoDBClient()
 
     def transform_data(self, words):
         df = pd.DataFrame({'hanzi':words})
@@ -72,6 +73,21 @@ class DataTransformer:
 
         print("start processing")
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
+            existing_record = self.mongo_client.find_record(row['hanzi'])
+
+            if existing_record:
+                print(row['hanzi'], 'skipped')
+                for column in self.columns:
+                    if existing_record[column]:
+                        df.loc[index, column] = existing_record[column]
+                continue
+
+
+                #existing_record['translation']
+                #existing_record['time']
+                #existing_record['pinyin']
+                #existing_record['audio']
+
             if self.translation:
                 translation_google = ''
                 #if not self.test:
@@ -81,17 +97,21 @@ class DataTransformer:
                     extra_mean = '. Extra mean: ' + ' | '.join(extra_mean)
                 else:
                     extra_mean = ''
-                print(extra_mean)
                 df.loc[index, 'translation'] = translation_google + extra_mean
 
             if self.pinyin:
                 df.loc[index, 'pinyin'] = pinyin.get(row['hanzi'], delimiter=" ")
+
+            if self.save and self.pinyin and self.translation:
+                self.mongo_client.insert_record(df.loc[index].to_dict())
 
         if self.audio:
             audioCreator = AudioCreator()
             audioCreator.create_audios(list(df['hanzi']))
             df['audio'] = audioCreator.paths
 
-        print('Transformation finished')
 
+        self.mongo_client.delete_duplicates()
+
+        print('Transformation finished')
         return df[self.columns]
