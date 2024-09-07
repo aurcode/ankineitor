@@ -30,7 +30,7 @@ class AudioCreator:
         location = path + "-" + self.language + ".mp3"
         if os.path.exists(location):
             #print(f"File {location} already exists. Skipping creation.")
-            return
+            return location
 
         speech = gTTS(text=text, lang=self.language, slow=False)
         speech.save(location)
@@ -40,8 +40,8 @@ class AudioCreator:
         print("Creating audios")
         for key in tqdm(texts):
             path = self.folder_name + (''.join(re.findall(r'[\u4e00-\u9fffa-zA-Z0-9]+', key)))[:30]
-            self._create_audio(key, path)
-            self.paths.append(path)
+            new_path = self._create_audio(key, path)
+            self.paths.append(new_path)
 
 class DataTransformer:
     def __init__(self, pinyin = True, translation = False, audio = False, time = False, save = True, test = os.getenv('DEBUG'), lan_in = 'zh-CN', lan_out = 'es'):

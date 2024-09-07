@@ -2,54 +2,79 @@ from Processing import TextExtractor
 from Processing import DataTransformer
 from Utils import DataUtils
 from Utils import stUtils
-#from Ankineitor import DeckGenerator
-
+from Ankineitor import DeckGenerator
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 debug = os.getenv('DEBUG')
 
-def main():
-    stu = stUtils()
-    uploaded_files, file_names = stu.request_files()
-
+def process_uploaded_files(uploaded_files, debug=False):
+    """Processes uploaded files by extracting Chinese characters, applying transformations, and returning combined DataFrame."""
+    # Handle debug mode with pre-loaded files
     if debug:
         uploaded_files = DataUtils.read_files_to_uploaded(['C://ankineitor//电路CLASSES.pdf'])
 
     if uploaded_files:
-        if debug:
-            te = te = TextExtractor(uploaded_files)
-        else:
-            uploaded_file_data = {file.name: file.getvalue() for file in uploaded_files}
-            te = TextExtractor(uploaded_file_data)
+        # Text extraction
+        file_data = {file.name: file.getvalue() for file in uploaded_files} if not debug else uploaded_files
+        te = TextExtractor(file_data)
         te.extract_text()
         df1 = te.separated_chinese_characters()
-        stu.print_DF(df1, title='Extracted Chinese Characters')
 
+        return df1
+    return None
+
+def filter_and_transform(df1, stu):
+    """Filters the DataFrame based on frequency and applies DataTransformer for pinyin, translation, audio, and time."""
+    # Filter DataFrame by frequency and HSK levels
+    stu.print_DF(df1, title='Extracted Chinese Characters')
+    if not debug:
         df1, hsk = DataUtils().filter_dataframe(df1)
+        stu.print_DF(hsk, title='Filtered HSK Words')
+        stu.print_DF(df1, title='NEW Words')
+        n = stu.request_number()
+    if debug:
+        n = 5
+    if n is not None:
+        df1 = df1[df1['frequency'] > n]  # Frequency threshold
 
-        stu.print_DF(hsk, title='Filtered Words')
-        stu.print_DF(df1, title='DF')
-
-        transformer = DataTransformer(pinyin = True, translation = True, audio = True, time = True)
+        # Apply DataTransformer for pinyin, translation, audio, and time
+        transformer = DataTransformer(pinyin=True, translation=True, audio=True, time=True)
         df2 = transformer.transform_data(df1['hanzi'])
-        stu.print_DF(df2, title='DataTransformer')
 
-        df = DataUtils().combine_dataframes(df1, df2, 'hanzi')
-        stu.print_DF(df, title='Combinator')
+        # Combine original and transformed DataFrames
+        combined_df = DataUtils().combine_dataframes(df1, df2, 'hanzi')
+        stu.print_DF(combined_df, title='Transformed & Combined DataFrame')
 
+        stu.st.write(f'Your dataframe len is: {len(combined_df)}')
+        return combined_df
 
-    #name_new_df = DataUtils.save_df(df, '电路')
-    #print(name_new_df)
+def create_deck(df, config, stu, key=''):
+    if stu.st.button('Create Deck'+key):
+        try:
+            generator = DeckGenerator(df, config)
+            filepath = generator.generate_decks()
+            stu.st.write(f'Deck successfully created in {filepath}')
+        except Exception as e:
+            stu.st.error(f'Error creating deck: {e}')
 
+def main():
+    stu = stUtils()
+    config = stu.choose_configuration_for_anki()
+    if not debug:
+        _df = stu.choose_dataframe()
+        if _df is not None:
+            create_deck(_df, config, stu)
+            stu.add_separator()
 
-#DataUtilsDF = DataUtils("history/testing.txt")
-#DataUtils.print_DF(DataUtilsDF.df,3)
+    uploaded_files, file_names = stu.request_files()
+    df1 = process_uploaded_files(uploaded_files, debug)
 
-#generator = DeckGenerator(DataUtilsDF.df)
-#generator.generate_decks()
-
-#diff_data 
+    if df1 is not None:
+        df = filter_and_transform(df1, stu)
+        if df is not None:
+            create_deck(df, config, stu, ' ')
+            stu.add_separator()
 
 main()
