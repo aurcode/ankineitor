@@ -62,6 +62,7 @@ def create_deck(df, config, stu, key=''):
 def main():
     stu = stUtils()
     config = stu.choose_configuration_for_anki()
+    config['basics']['deck_title'] = 're:零'
     if not debug:
         _df = stu.choose_dataframe()
         if _df is not None:

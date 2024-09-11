@@ -10,6 +10,7 @@ from deep_translator import GoogleTranslator
 from typing import List
 import pinyin
 import pinyin.cedict
+from opencc import OpenCC
 from datetime import datetime
 
 #import sys
@@ -44,7 +45,8 @@ class AudioCreator:
             self.paths.append(new_path)
 
 class DataTransformer:
-    def __init__(self, pinyin = True, translation = False, audio = False, time = False, save = True, test = os.getenv('DEBUG'), lan_in = 'zh-CN', lan_out = 'es'):
+    def __init__(self, traditional = False, pinyin = True, translation = False, audio = False, time = False, save = True, test = os.getenv('DEBUG'), lan_in = 'zh-CN', lan_out = 'es'):
+        self.traditional = traditional
         self.pinyin = pinyin
         self.translation = translation
         self.audio = audio
@@ -62,6 +64,7 @@ class DataTransformer:
         self.mongo_client = MongoDBClient()
 
     def transform_data(self, words):
+        print("start processing")
         df = pd.DataFrame({'hanzi':words})
         df = df[df['hanzi'].notnull()]
 
@@ -71,22 +74,23 @@ class DataTransformer:
         if self.time:
             df['time'] = datetime.now().strftime("%d/%m/%Y")
 
-        print("start processing")
+        # This not working properly
+        if self.traditional:
+            self.columns.append('traditional')
+            df['traditional'] = df['hanzi']
+            converter = OpenCC('t2s')
+            df['hanzi'] = df['hanzi'].apply(converter.convert)
+
+
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
             existing_record = self.mongo_client.find_record(row['hanzi'])
 
             if existing_record:
                 print(row['hanzi'], 'skipped')
-                for column in self.columns:
+                for column in ['pinyin', 'translation']:
                     if existing_record[column]:
                         df.loc[index, column] = existing_record[column]
                 continue
-
-
-                #existing_record['translation']
-                #existing_record['time']
-                #existing_record['pinyin']
-                #existing_record['audio']
 
             if self.translation:
                 translation_google = ''
