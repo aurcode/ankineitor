@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from Ankineitor import CHINESE, RECOGNITION, PHOTO_PHOTO_BASIC
+from Utils import DataUtils
 
 class stUtils:
     def __init__(self) -> None:
@@ -29,6 +30,37 @@ class stUtils:
         # Button to confirm the number input
         if self.st.button('Generate'):
             return number
+
+        return None
+
+    def filter_by_category(self, df: pd.DataFrame) -> pd.DataFrame:
+        all_categories = DataUtils.get_all_categories()
+        selected_category = self.st.selectbox('Choose an existing category or type a new one', options=['']+all_categories, index=0)
+
+        if not selected_category == '':
+            return df
+
+        # Create a boolean mask for the filtering condition
+        mask = df['categories'].apply(
+            lambda x: any(cat.strip() in x.split(', ') for cat in selected_category.split(', '))
+        )
+        # Filter the DataFrame
+        return df[mask]
+
+    def request_category(self):
+        # Request the user to input a category or select an existing one
+        all_categories = DataUtils.get_all_categories()
+
+        # Show a text input for a new category
+        selected_category = self.st.selectbox('Choose an existing category or type a new one', options=all_categories, index=0)
+
+        new_category = self.st.text_input('Or create a new category', value='')
+
+        # Button to confirm the selection or creation of a category
+        if self.st.button('SetCategory'):
+            if new_category:  # If a new category is provided, use it
+                return new_category
+            return selected_category  # Otherwise, return the selected category
 
         return None
 
