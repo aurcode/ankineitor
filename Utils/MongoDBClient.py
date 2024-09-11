@@ -67,20 +67,24 @@ class MongoDBClient:
         """Add a new category to a specific 'hanzi', creating it if it doesn't exist."""
         if new_category is None:
             return
-        record = self.find_record(hanzi)
-        if record:
-            current_categories = record.get('categories', [])
-            if new_category not in current_categories:
-                current_categories.append(new_category)
-                self.collection.update_one(
-                    {'hanzi': hanzi},
-                    {'$set': {'categories': current_categories}}
-                )
-            else:
-                print(f"'{hanzi}' already belongs to category '{new_category}'.")
-        else:
-            print(f"Record for '{hanzi}' not found.")
 
+        # Query to find the record
+        query = {'hanzi': hanzi}
+
+        update = {
+            '$addToSet': {'categories': new_category}  # '$addToSet' ensures no duplicates
+        }
+
+        result = self.collection.update_one(
+            query,
+            update,
+            upsert=True  # Create a new document if one does not exist
+        )
+
+        if result.matched_count == 0:
+            print(f"Created new record for '{hanzi}' with category '{new_category}'.")
+        else:
+            print(f"Updated record for '{hanzi}' with category '{new_category}'.")
 
     def close(self) -> None:
         """Close the MongoDB connection."""
