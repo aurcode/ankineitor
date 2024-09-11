@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from Ankineitor import CHINESE, PHOTO_PHOTO_BASIC
+from Ankineitor import CHINESE, RECOGNITION, PHOTO_PHOTO_BASIC
 
 class stUtils:
     def __init__(self) -> None:
@@ -13,7 +13,7 @@ class stUtils:
 
     def request_files(self):
         # Requeself.st multiple file uploads
-        uploaded_files = self.st.file_uploader("Choose PDF or PPT files", type=["pdf", "pptx"], accept_multiple_files=True)
+        uploaded_files = self.st.file_uploader("Choose PDF or PPT files", type=["pdf", "pptx", "txt"], accept_multiple_files=True)
 
         if uploaded_files:
             file_names = [uploaded_file.name for uploaded_file in uploaded_files]
@@ -34,10 +34,12 @@ class stUtils:
 
     def choose_configuration_for_anki(self):
         # Let user choose between two preconfigurations
-        config_choice = st.selectbox('Choose configuration:', ['CHINESE', 'PHOTO_PHOTO_BASIC'])
+        config_choice = st.selectbox('Choose configuration:', ['RECOGNITION', 'CHINESE', 'PHOTO_PHOTO_BASIC'])
 
         if config_choice == 'CHINESE':
             CONFIG = CHINESE
+        if config_choice == 'RECOGNITION':
+            CONFIG = RECOGNITION
         else:
             CONFIG = PHOTO_PHOTO_BASIC
 

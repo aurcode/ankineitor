@@ -24,10 +24,17 @@ class TextExtractor:
                 self._extract_text_from_pdf(file_content)
             elif file_name.lower().endswith('.pptx'):
                 self._extract_text_from_pptx(file_content)
+            elif file_name.lower().endswith('.txt'):
+                self._extract_text_from_txt(file_content)
             else:
                 print(f'Unsupported file type: {file_name}')
 
         self.text = '。'.join(self.text)
+
+    def _extract_text_from_txt(self, file_content):
+        # Assuming the file content is in bytes, decode it
+        text = file_content.decode('utf-8')
+        self.text.append(text)
 
     def _extract_text_from_pdf(self, file_content):
         pdf_file = io.BytesIO(file_content)
