@@ -25,6 +25,12 @@ class DataUtils:
         return uploaded_files
 
     @classmethod
+    def get_all_categories(cls):
+        from Utils import MongoDBClient
+        mongo_client = MongoDBClient()
+        return mongo_client.get_all_categories()
+
+    @classmethod
     def print_DF(cls, df: pd.DataFrame, num: int = 10, head: bool=True):
         if head:
             print(tabulate(df.head(num), df.columns, tablefmt="pretty"))

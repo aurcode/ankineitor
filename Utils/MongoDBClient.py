@@ -1,5 +1,5 @@
 from pymongo import MongoClient
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
 import os
 
@@ -44,9 +44,43 @@ class MongoDBClient:
         """Find a record in the MongoDB collection by 'hanzi'."""
         return self.collection.find_one({'hanzi': hanzi})
 
-    def insert_record(self, record: Dict[str, Any]) -> None:
+    def insert_record(self, record: Dict[str, Any], force: bool = False) -> None:
         """Insert a new record into the MongoDB collection."""
+        existing_record = self.collection.find_one({'hanzi': record['hanzi']})
+        if existing_record and not force:
+            print(f"Record for '{record['hanzi']}' already exists. Insertion skipped.")
+            return
         self.collection.insert_one(record)
+
+    def get_categories(self, hanzi: str) -> List[str]:
+        """Get the categories a word belongs to."""
+        record = self.find_record(hanzi)
+        if record and 'categories' in record:
+            return [i for i in record['categories'] if i is not None ]
+        return []
+
+    def get_all_categories(self) -> list:
+        """Retrieve all distinct categories from the database."""
+        return [i for i in self.collection.distinct("categories") if i is not None ] # Assuming 'categories' field holds category data
+
+    def add_category(self, hanzi: str, new_category: str) -> None:
+        """Add a new category to a specific 'hanzi', creating it if it doesn't exist."""
+        if new_category is None:
+            return
+        record = self.find_record(hanzi)
+        if record:
+            current_categories = record.get('categories', [])
+            if new_category not in current_categories:
+                current_categories.append(new_category)
+                self.collection.update_one(
+                    {'hanzi': hanzi},
+                    {'$set': {'categories': current_categories}}
+                )
+            else:
+                print(f"'{hanzi}' already belongs to category '{new_category}'.")
+        else:
+            print(f"Record for '{hanzi}' not found.")
+
 
     def close(self) -> None:
         """Close the MongoDB connection."""

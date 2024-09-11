@@ -84,7 +84,6 @@ class DataTransformer:
 
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
             existing_record = self.mongo_client.find_record(row['hanzi'])
-
             if existing_record:
                 print(row['hanzi'], 'skipped')
                 for column in ['pinyin', 'translation']:
@@ -114,8 +113,17 @@ class DataTransformer:
             audioCreator.create_audios(list(df['hanzi']))
             df['audio'] = audioCreator.paths
 
-
         self.mongo_client.delete_duplicates()
 
         print('Transformation finished')
         return df[self.columns]
+
+    def transform_categories(self, df, category):
+        #df = pd.DataFrame({'hanzi':words})
+        #df = df[df['hanzi'].notnull()]
+
+        for index, row in tqdm(df.iterrows(), total=df.shape[0]):
+            self.mongo_client.add_category(row['hanzi'],category)
+            df.loc[index, 'categories'] = ', '.join(self.mongo_client.get_categories(row['hanzi']))
+
+        return df
