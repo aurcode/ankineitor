@@ -24,28 +24,51 @@ class stUtils:
         return None, []
 
     def request_number(self):
-        # Requeself.st a number input from the user
-        number = self.st.number_input('Input the frequency', min_value=1, max_value=1000, step=1, value=80)
+        # Initialize session state for the number if not already set
+        if 'number' not in self.st.session_state:
+            self.st.session_state['number'] = 80  # Default value
+
+        # Request a number input from the user
+        self.st.session_state['number'] = self.st.number_input(
+            'Input the frequency', min_value=1, max_value=1000, step=1, value=self.st.session_state['number']
+        )
 
         # Button to confirm the number input
-        if self.st.button('Generate'):
-            return number
+        if self.create_button('Generate'):
+            return self.st.session_state['number']
 
         return None
 
-    def filter_by_category(self, df: pd.DataFrame) -> pd.DataFrame:
+    def filter_by_category(self, df: pd.DataFrame): #-> Optional[pd.DataFrame]:
         all_categories = DataUtils.get_all_categories()
-        selected_category = self.st.selectbox('Choose an existing category or type a new one', options=['']+all_categories, index=0)
 
-        if not selected_category == '':
-            return df
+        # Initialize the session state for selected category if it doesn't exist
+        if 'selected_category' not in self.st.session_state:
+            self.st.session_state['selected_category'] = ''
 
-        # Create a boolean mask for the filtering condition
+        # Use the selectbox and store the selection in session state
+        self.st.session_state['selected_category'] = self.st.selectbox(
+            'Choose an existing category or type a new one', 
+            options=[''] + all_categories, 
+            index=0
+        )
+
+        # If no category is selected, return None
+        if self.st.session_state['selected_category'] == '':
+            return None
+
+        # Filter DataFrame by the selected category
+        selected_category = self.st.session_state['selected_category']
         mask = df['categories'].apply(
             lambda x: any(cat.strip() in x.split(', ') for cat in selected_category.split(', '))
         )
-        # Filter the DataFrame
-        return df[mask]
+
+        df_with_mask = df[mask]
+        df_with_mask.reset_index(drop=True)
+        self.print_DF(df_with_mask, title="Filtered")
+
+        # Return the filtered DataFrame
+        return df_with_mask
 
     def request_category(self):
         # Request the user to input a category or select an existing one
@@ -64,6 +87,11 @@ class stUtils:
 
         return None
 
+    def create_button(self, name):
+        if self.st.button(name):
+            return True
+        return None
+
     def choose_configuration_for_anki(self):
         # Let user choose between two preconfigurations
         config_choice = st.selectbox('Choose configuration:', ['RECOGNITION', 'CHINESE', 'PHOTO_PHOTO_BASIC'])
@@ -78,9 +106,25 @@ class stUtils:
         st.write(f'You selected: {config_choice}')
         return CONFIG
 
+    def choose_dataframes(self):
+        df_files = st.file_uploader('Upload CSV files for DataFrames', type=['csv'], accept_multiple_files=True)
+        dfs = []
+
+        if df_files is not None:
+            for file in df_files:
+                df = pd.read_csv(file)
+                dfs.append(df)
+                st.write(f'Preview of the uploaded DataFrame from {file.name}:')
+            if dfs != []:
+                dfs_combined = DataUtils.combine_dataframes_sum_frequencies(dfs).sort_values(by='frequency', ascending=False)
+                self.print_DF(dfs_combined, 'Combined DF')
+                return dfs_combined
+
+        return None
+
     def choose_dataframe(self):
         # Let user upload and choose which DataFrame to use
-        df_file = st.file_uploader('Upload CSV file for DataFrame', type=['csv'])
+        df_file = st.file_uploader('Upload CSV file for DataFrame', type=['csv'], accept_multiple_files=True)
 
         if df_file is not None:
             df = pd.read_csv(df_file)

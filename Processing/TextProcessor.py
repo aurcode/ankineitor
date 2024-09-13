@@ -85,11 +85,11 @@ class DataTransformer:
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
             existing_record = self.mongo_client.find_record(row['hanzi'])
             if existing_record:
-                print(row['hanzi'], 'skipped')
-                for column in ['pinyin', 'translation']:
-                    if existing_record[column]:
-                        df.loc[index, column] = existing_record[column]
-                continue
+                if existing_record.get('pinyin') and existing_record.get('translation'):
+                    for column in ['pinyin', 'translation']:
+                        if existing_record[column]:
+                            df.loc[index, column] = existing_record[column]
+                    continue
 
             if self.translation:
                 translation_google = ''
@@ -118,12 +118,14 @@ class DataTransformer:
         print('Transformation finished')
         return df[self.columns]
 
-    def transform_categories(self, df, category):
+    def transform_categories(self, df, category = None):
         #df = pd.DataFrame({'hanzi':words})
         #df = df[df['hanzi'].notnull()]
 
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
-            self.mongo_client.add_category(row['hanzi'],category)
+            if category is not None:
+                self.mongo_client.add_category(row['hanzi'],category)
             df.loc[index, 'categories'] = ', '.join(self.mongo_client.get_categories(row['hanzi']))
 
+        df.reset_index(drop=True)
         return df
