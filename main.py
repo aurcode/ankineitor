@@ -1,11 +1,13 @@
 from Processing import TextExtractor,DataTransformer
-from Utils import DataUtils,stUtils, MongoDBClient
+from Utils import DataUtils,stUtils
 from Ankineitor import DeckGenerator
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 debug = os.getenv('DEBUG')
+#filters = None
+filters = DataUtils.fetch_hsk_files()
 
 def process_uploaded_files(uploaded_files, debug=False):
     """Processes uploaded files by extracting Chinese characters, applying transformations, and returning combined DataFrame."""
@@ -23,75 +25,78 @@ def process_uploaded_files(uploaded_files, debug=False):
         return df
     return None
 
-def filter_and_transform(df, stu, transformer):
+def filters_df(df, stu, transformer, filters = None):
     """Filters the DataFrame based on frequency and applies DataTransformer for pinyin, translation, audio, and time."""
     # Filter DataFrame by frequency and HSK levels
     if df is not None:
-        stu.print_DF(df, title='Extracted Chinese Characters')
-        if not debug:
-            df, hsk = DataUtils().filter_dataframe(df)
-            stu.print_DF(hsk, title='Filtered HSK Words')
-            stu.print_DF(df, title='NEW Words')
-            df = categories_and_transform(df, stu, transformer)
-            n = stu.request_number()
         if debug:
-            n = 5
-        if n is not None:
-            df = df[df['frequency'] > n]  # Frequency threshold
+            #n = 5
+            df_new = df
+            stu.print_DF(df_new, title='Extracted Chinese Characters')
+            n = stu.request_number()
+        if not debug:
+            if filters is None:
+                df_filtered, hsk = DataUtils.filter_dataframe(df, filters)
+                stu.print_DF(hsk, title='Filtered HSK Words')
+                stu.print_DF(df_filtered, title='NEW Words')
+            if df_filtered is not None:
+                df_new = categories_and_transform(df_filtered, stu, transformer)
+            n = stu.request_number()
 
-            # Apply DataTransformer for pinyin, translation, audio, and time
-            _df = transformer.transform_data(df['hanzi'])
+        if n is not None and df_new is not None:
+            df_f = df_new[df_new['frequency']>n]
+            if df_f is not None:
+                return df_f
+    return None
 
-            # Combine original and transformed DataFrames
-            combined_df = DataUtils().combine_dataframes(df, _df, 'hanzi')
-            stu.print_DF(combined_df, title='Transformed & Combined DataFrame')
-
-            stu.st.write(f'Your dataframe len is: {len(combined_df)}')
-            return combined_df
+def transformation_df(df, stu, transformer):
+    if df is not None:
+        new_df = df.copy()
+        # Apply DataTransformer for pinyin, translation, audio, and time
+        _df = transformer.transform_data(df['hanzi'])
+        # Combine original and transformed DataFrames
+        combined_df = DataUtils().combine_dataframes(new_df, _df, 'hanzi')
+        stu.print_DF(combined_df, title='Transformed & Combined DataFrame')
+        stu.st.write(f'Your dataframe len is: {len(combined_df)}')
+        return combined_df
 
 def categories_and_transform(df, stu, dt):
     if df is not None:
         categories = stu.request_category()
-        dt.transform_categories(df,categories)
-        stu.print_DF(df, title='Get Categories')
-        return df
+        _df = dt.transform_categories(df,categories)
+        stu.print_DF(_df, title='Get Categories')
+        return _df
+    return None
 
 def filter_by_category(df, stu):
     if df is not None:
-        df = stu.filter_by_category(df)
-        stu.print_DF(df, title="Filtered")
-        return df
+        _df = stu.filter_by_category(df)
+        return _df
+    return None
 
 def create_deck(df, config, stu, key=''):
     if df is not None:
-        if stu.st.button('Create Deck'+key):
+        if stu.create_button('Create Deck'+key):
             try:
-                generator = DeckGenerator(df, config)
-                filepath = generator.generate_decks()
-                stu.st.write(f'Deck successfully created in {filepath}')
+                if 'deck_created' not in st.session_state:
+                    stu.st.session_state['deck_created'] = False
+
+                if not stu.st.session_state['deck_created']:
+                    generator = DeckGenerator(df, config)
+                    filepath = generator.generate_decks()
+                    stu.st.write(f'Deck successfully created in {filepath}')
+                    stu.st.session_state['deck_created'] = True
+                    return filepath
             except Exception as e:
                 stu.st.error(f'Error creating deck: {e}')
-
-        stu.add_separator()
+    return None
 
 def main():
     stu = stUtils()
     transformer = DataTransformer(pinyin=True, translation=True, audio=True, time=True)
-    config = stu.choose_configuration_for_anki()
-
-    config['basics']['deck_title'] = 're:零'
-
-    if not debug:
-        _df = stu.choose_dataframe()
-        if _df is not None:
-            create_deck(_df, config, stu)
-            stu.add_separator()
-
     uploaded_files, file_names = stu.request_files()
     df1 = process_uploaded_files(uploaded_files, debug)
-    df2 = filter_and_transform(df1, stu, transformer)
-
-    df_f = filter_by_category(df2, stu)
-    create_deck(df_f, config, stu, ' ')
+    df2 = filters_df(df1, stu, transformer, filters)
+    df3 = transformation_df(df2, stu, transformer)
 
 main()

@@ -45,12 +45,34 @@ class MongoDBClient:
         return self.collection.find_one({'hanzi': hanzi})
 
     def insert_record(self, record: Dict[str, Any], force: bool = False) -> None:
-        """Insert a new record into the MongoDB collection."""
+        """Insert or update a record in the MongoDB collection."""
+        # Buscar si existe un registro con el mismo 'hanzi'
         existing_record = self.collection.find_one({'hanzi': record['hanzi']})
-        if existing_record and not force:
-            print(f"Record for '{record['hanzi']}' already exists. Insertion skipped.")
-            return
-        self.collection.insert_one(record)
+
+        if existing_record:
+            # Verificar si faltan los campos 'pinyin' o 'translation' o están vacíos
+            update_fields = {}
+
+            if not existing_record.get('pinyin'):
+                update_fields['pinyin'] = record.get('pinyin')
+
+            if not existing_record.get('translation'):
+                update_fields['translation'] = record.get('translation')
+
+            # Si hay campos para actualizar, los actualizamos
+            if update_fields:
+                self.collection.update_one(
+                    {'hanzi': record['hanzi']},
+                    {'$set': update_fields}
+                )
+                print(f"Record for '{record['hanzi']}' updated with {update_fields}.")
+            else:
+                print(f"Record for '{record['hanzi']}' already has 'pinyin' and 'translation'. No update needed.")
+        else:
+            # Si no existe el registro, lo insertamos
+            self.collection.insert_one(record)
+            print(f"Record for '{record['hanzi']}' inserted.")
+
 
     def get_categories(self, hanzi: str) -> List[str]:
         """Get the categories a word belongs to."""

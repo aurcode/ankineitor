@@ -1,10 +1,13 @@
 import genanki
 from tqdm import tqdm
+import pandas as pd
 
 #class CardsGenerator:
 
 class DeckGenerator:
-    def __init__(self, df, config):
+    def __init__(self, df_name, config):
+        df = pd.read_csv(df_name)
+        print(df)
         self.columns = list(df.columns)
         self.anki_cards = df.to_dict(orient='index')
         self.media_list = list()
@@ -29,9 +32,9 @@ class DeckGenerator:
                     filename = entry[media_col]
                     self.media_list.append(filename)
                     if '.mp3' in filename:
-                        self.anki_cards[key][media_col] = '[sound:' + filename.split('/')[-1] + ']'
+                        self.anki_cards[key][media_col] = '[sound:' + filename.split('\\')[-1] + ']'
                     if '.png' in filename or '.jpg' in filename:
-                        self.anki_cards[key][media_col] = filename.split('/')[-1]
+                        self.anki_cards[key][media_col] = filename.split('\\')[-1]
 
     def create_notes(self, model: genanki.Model):
         self.__build_media()
@@ -40,6 +43,8 @@ class DeckGenerator:
 
     def __build_tags(self, card):
         tags = list()
+        if 'categories' in self.columns:
+            [tags.append(i) for i in card['categories'].split(', ')]
         if 'time' in self.columns:
             tags.append('time:' + card['time'])
         if 'lesson' in self.columns:
