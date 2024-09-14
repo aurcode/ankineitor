@@ -49,21 +49,25 @@ RECOGNITION = {
     'model_fields': [
         {"name": "Simplified"},
         {"name": "Pinyin"},
-        {"name": "Meaning"},
+        {"name": "Meaning1"},
+        {"name": "Meaning2"},
+        {"name": "Sentence1"},
+        {"name": "Sentence2"},
+        {"name": "Sentence3"},
         {"name": "Part"},
         {"name": "Audio"},
-        {"name": "developed_by"},
-        {"name": "type"},
+        {"name": "developed_by"}, # necessary
+        {"name": "type"}, # necessary
     ],
     'model_templates': {
          'main': [
               {"name": "Recognition Card",
                "qfmt": read_file('./templates/chinese/front.html'),
-               "afmt": read_file('./templates/chinese/back.html'),},
+               "afmt": read_file('./templates/chinese/back_character_sentences.html'),},
             ],
          'css': read_file('./templates/chinese/style.css'),
     },
-    'model_builder': ['hanzi','pinyin','translation','part','audio']
+    'model_builder': ['hanzi','pinyin','meaning_english','meaning_spanish','sentence_1','sentence_2','sentence_3','part','audio']
 }
 
 PHOTO_PHOTO_BASIC = {

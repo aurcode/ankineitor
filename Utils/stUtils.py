@@ -24,18 +24,11 @@ class stUtils:
         return None, []
 
     def request_number(self):
-        # Initialize session state for the number if not already set
-        if 'number' not in self.st.session_state:
-            self.st.session_state['number'] = 80  # Default value
-
-        # Request a number input from the user
-        self.st.session_state['number'] = self.st.number_input(
-            'Input the frequency', min_value=1, max_value=1000, step=1, value=self.st.session_state['number']
+        number = self.st.number_input(
+            'Input the frequency', min_value=1, max_value=1000, step=1, value=80
         )
-
-        # Button to confirm the number input
         if self.create_button('Generate'):
-            return self.st.session_state['number']
+            return number
 
         return None
 
@@ -94,11 +87,12 @@ class stUtils:
 
     def choose_configuration_for_anki(self):
         # Let user choose between two preconfigurations
-        config_choice = st.selectbox('Choose configuration:', ['RECOGNITION', 'CHINESE', 'PHOTO_PHOTO_BASIC'])
+        config_choice = st.selectbox('Choose configuration:', 
+                                     ['RECOGNITION', 'CHINESE', 'PHOTO_PHOTO_BASIC'])
 
         if config_choice == 'CHINESE':
             CONFIG = CHINESE
-        if config_choice == 'RECOGNITION':
+        elif config_choice == 'RECOGNITION':
             CONFIG = RECOGNITION
         else:
             CONFIG = PHOTO_PHOTO_BASIC
@@ -139,3 +133,7 @@ class stUtils:
     def add_separator(self):
         # Add a visual separator using markdown
         st.markdown("<hr>", unsafe_allow_html=True)  # Horizontal rule for separation
+
+    def get_filters(self):
+        filters = DataUtils.fetch_hsk_files()
+        return filters

@@ -9,10 +9,8 @@ import pandas as pd
 import os
 
 class DataUtils:
-    def __init__(self, path: str = ''):
-        self.df: pd.DataFrame
-        if path != '':
-            self.df = pd.read_csv(path)
+    _filters = None
+    df: pd.DataFrame = None
 
     @classmethod
     def read_files_to_uploaded(cls, file_paths):
@@ -64,18 +62,28 @@ class DataUtils:
     @classmethod
     def fetch_hsk_files(cls):
         """Fetch HSK and other files and store them in a dictionary."""
-        columns = ['hanzi', 'tradicional', 'pinyin1', 'pinyin2', 'space', 'mean']
+        if cls._filters is None:
+            print("Fetch HSK files")
+            columns = ['hanzi', 'tradicional', 'pinyin1', 'pinyin2', 'space', 'mean']
 
-        # Cargar archivos en un diccionario
-        hsk_files = {
-            'hsk1': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/Chinese__HSK-1.txt', sep='\t', names=columns, index_col=False),
-            'hsk2': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/Chinese__HSK-2.txt', sep='\t', names=columns, index_col=False),
-            'hsk3': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/Chinese__HSK-3.txt', sep='\t', names=columns, index_col=False),
-            'df_ting': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/hsk-5-vocabulary.csv', sep=';'),
-            'df_hsk5': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/%E5%90%AC%E5%8A%9B-hsk5-vocabulary', sep=';')
-        }
+            # Cargar archivos en un diccionario
+            cls._filters = {
+                'hsk1': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/Chinese__HSK-1.txt', sep='\t', names=columns, index_col=False),
+                'hsk2': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/Chinese__HSK-2.txt', sep='\t', names=columns, index_col=False),
+                'hsk3': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/Chinese__HSK-3.txt', sep='\t', names=columns, index_col=False),
+                'df_ting': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/hsk-5-vocabulary.csv', sep=';'),
+                'df_hsk5': pd.read_csv('https://raw.githubusercontent.com/aurcode/chinese-words/main/%E5%90%AC%E5%8A%9B-hsk5-vocabulary', sep=';')
+            }
 
-        return hsk_files
+        return cls._filters
+
+    @classmethod
+    def read_csv(cls, path):
+        df = pd.read_csv(path)
+        df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+        df = df.drop_duplicates(subset=['hanzi'])
+        df = df.sort_values(by='frequency', ascending=False)
+        return df
 
     @classmethod
     def filter_and_save_removed(cls, df, df_final, df_saved, column_name_on, column_name_removed):
@@ -90,32 +98,6 @@ class DataUtils:
         return final_df, df_saved
 
     @classmethod
-    def iterate_data(cls, df):
-        for index, row in df.iterrows():
-            if str(row['created_y']) != 'nan':
-                df.loc[index, 'created'] = row['created_y']
-            if str(row['created_x']) != 'nan':
-                df.loc[index, 'created'] = row['created_x']
-            if str(row['pinyin_x']) != 'nan':
-                df.loc[index, 'pinyin'] = row['pinyin_x']
-            if str(row['part_y']) != 'nan':
-                df.loc[index, 'part'] = row['part_y']
-            if str(row['pinyin_y']) != 'nan':
-                df.loc[index, 'pinyin'] = row['pinyin_y']
-        df = df.drop(columns=['created_x', 'pinyin_x', 'created_y', 'pinyin_y'])
-        return df
-
-    @classmethod
-    def diff_data(cls, original_df, new_df):
-        original_df = pd.read_csv('classes.csv')
-        new_df = original_df.merge(new_df, left_on=['hanzi', 'mean'], right_on=['hanzi', 'mean'], how='outer', indicator=True)
-        new_words = new_df.loc[new_df._merge == 'right_only'].drop(columns=['_merge'])
-        new_df = new_df.drop(columns=['_merge'])
-        new_df = self.iterate_data(new_df)
-        new_words = self.iterate_data(new_words)
-        return new_df, new_words
-
-    @classmethod
     def combine_dataframes_sum_frequencies(cls, dfs):
         combined_df = pd.DataFrame()
 
@@ -126,6 +108,6 @@ class DataUtils:
                 combined_df = pd.merge(combined_df, df, on=['hanzi', 'part'], how='outer', suffixes=('_left', '_right'))
                 combined_df['frequency'] = combined_df[['frequency_left', 'frequency_right']].sum(axis=1, skipna=True)
                 #combined_df.drop(['Unnamed:0'], axis=1)
-                combined_df.reset_index(drop=False)
+                combined_df.reset_index(drop=True)
                 combined_df = combined_df[['hanzi', 'part', 'frequency']]
         return combined_df[['hanzi', 'part', 'frequency']]
