@@ -5,9 +5,7 @@ import pandas as pd
 #class CardsGenerator:
 
 class DeckGenerator:
-    def __init__(self, df_name, config):
-        df = pd.read_csv(df_name)
-        print(df)
+    def __init__(self, df, config):
         self.columns = list(df.columns)
         self.anki_cards = df.to_dict(orient='index')
         self.media_list = list()
@@ -28,13 +26,18 @@ class DeckGenerator:
         media_columns = [col for col in self.columns if 'audio' in col.lower() or 'image' in col.lower()]
         for key, entry in tqdm(self.anki_cards.items()):
             for media_col in media_columns:
-                if media_col in entry:
+                # Ensure the media_col value is a string before proceeding
+                if media_col in entry and isinstance(entry[media_col], str):
                     filename = entry[media_col]
                     self.media_list.append(filename)
+                    print(filename)
                     if '.mp3' in filename:
                         self.anki_cards[key][media_col] = '[sound:' + filename.split('\\')[-1] + ']'
                     if '.png' in filename or '.jpg' in filename:
                         self.anki_cards[key][media_col] = filename.split('\\')[-1]
+                else:
+                    # Handle cases where entry[media_col] is not a string (like NaN or float)
+                    print(f"Skipping media column {media_col} for key {key} because it is not a valid string.")
 
     def create_notes(self, model: genanki.Model):
         self.__build_media()
@@ -43,11 +46,11 @@ class DeckGenerator:
 
     def __build_tags(self, card):
         tags = list()
-        if 'categories' in self.columns:
+        if 'categories' in self.columns and isinstance(card.get('categories'), str):
             [tags.append(i) for i in card['categories'].split(', ')]
-        if 'time' in self.columns:
+        if 'time' in self.columns and isinstance(card.get('time'), str):
             tags.append('time:' + card['time'])
-        if 'lesson' in self.columns:
+        if 'lesson' in self.columns and card.get('lesson') is not None:
             tags.append('lesson:' + str(card['lesson']))
 
         return tags
@@ -58,6 +61,9 @@ class DeckGenerator:
     def _create_note(self, model: genanki.Model, card):
         tags = self.__build_tags(card)
         fields = self.__build_fields(card)
+
+        print(tags)
+        print(fields)
 
         for i in ['@AURCODE', self.CONFIG['basics']['note_type']]:
             tags.append(i)
@@ -73,6 +79,7 @@ class DeckGenerator:
         my_package = genanki.Package(self.my_deck)
         my_package.media_files = self.media_list
         my_package.write_to_file(self.CONFIG['basics']['filename'])
+        my_package.write_to_collection_from_addon
 
     def generate_decks(self):
         self.create_notes(self.model)

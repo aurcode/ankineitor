@@ -44,22 +44,20 @@ class MongoDBClient:
         """Find a record in the MongoDB collection by 'hanzi'."""
         return self.collection.find_one({'hanzi': hanzi})
 
-    def insert_record(self, record: Dict[str, Any], force: bool = False) -> None:
+    def __insert_record_updater(self, record, update_fields, existing_record, column_name):
+        if not existing_record.get(column_name):
+            update_fields[column_name] = record.get(column_name)
+
+    def insert_record(self, record: Dict[str, Any], columns, force: bool = False) -> None:
         """Insert or update a record in the MongoDB collection."""
         # Buscar si existe un registro con el mismo 'hanzi'
         existing_record = self.collection.find_one({'hanzi': record['hanzi']})
 
         if existing_record:
-            # Verificar si faltan los campos 'pinyin' o 'translation' o están vacíos
             update_fields = {}
 
-            if not existing_record.get('pinyin'):
-                update_fields['pinyin'] = record.get('pinyin')
+            [self.__insert_record_updater(record, update_fields, existing_record, column_name) for column_name in columns]
 
-            if not existing_record.get('translation'):
-                update_fields['translation'] = record.get('translation')
-
-            # Si hay campos para actualizar, los actualizamos
             if update_fields:
                 self.collection.update_one(
                     {'hanzi': record['hanzi']},

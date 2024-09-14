@@ -45,7 +45,7 @@ class AudioCreator:
             self.paths.append(new_path)
 
 class DataTransformer:
-    def __init__(self, traditional = False, pinyin = True, translation = False, audio = False, time = False, save = True, test = os.getenv('DEBUG'), lan_in = 'zh-CN', lan_out = 'es'):
+    def __init__(self, traditional = False, pinyin = False, translation = False, audio = False, time = False, save = True, test = os.getenv('DEBUG'), lan_in = 'zh-CN', lan_out = 'es'):
         self.traditional = traditional
         self.pinyin = pinyin
         self.translation = translation
@@ -106,7 +106,7 @@ class DataTransformer:
                 df.loc[index, 'pinyin'] = pinyin.get(row['hanzi'], delimiter=" ")
 
             if self.save and self.pinyin and self.translation:
-                self.mongo_client.insert_record(df.loc[index].to_dict())
+                self.mongo_client.insert_record(df.loc[index].to_dict(), ['pinyin', 'translation', 'time'])
 
         if self.audio:
             audioCreator = AudioCreator()
