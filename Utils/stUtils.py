@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from Ankineitor import CHINESE, RECOGNITION, PHOTO_PHOTO_BASIC
+from Ankineitor import CHINESE, RECOGNITION, PHOTO_PHOTO_BASIC, RECOGNITION_REZERO
 from Utils import DataUtils
 
 class stUtils:
@@ -88,12 +88,14 @@ class stUtils:
     def choose_configuration_for_anki(self):
         # Let user choose between two preconfigurations
         config_choice = st.selectbox('Choose configuration:', 
-                                     ['RECOGNITION', 'CHINESE', 'PHOTO_PHOTO_BASIC'])
+                                     ['RECOGNITION', 'CHINESE', 'PHOTO_PHOTO_BASIC', 're:零'])
 
         if config_choice == 'CHINESE':
             CONFIG = CHINESE
         elif config_choice == 'RECOGNITION':
             CONFIG = RECOGNITION
+        elif config_choice == 're:零':
+            CONFIG = RECOGNITION_REZERO
         else:
             CONFIG = PHOTO_PHOTO_BASIC
 

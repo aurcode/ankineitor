@@ -9,7 +9,7 @@ class GroqAPIClient:
     def __init__(self, api_key=os.getenv('API_KEY')):
         self.client = Groq(api_key=api_key)
 
-    def send_prompt(self, prompt: str, model: str = "llama3-8b-8192"):
+    def send_prompt(self, prompt: str, model: str = "llama-3.1-70b-versatile"):
         response = self.client.chat.completions.create(
             messages=[
                 {"role": "user", "content": prompt}
@@ -48,7 +48,7 @@ class ChineseWordProcessor:
                 "2: [sentence].\n"
                 "3: [sentence].\n"
             )
-            example_sentences = self.api_client.send_prompt(prompt_for_sentences, model="llama3-groq-70b-8192-tool-use-preview")
+            example_sentences = self.api_client.send_prompt(prompt_for_sentences)
 
         if not improved_meaning:
             if previous_meaning:

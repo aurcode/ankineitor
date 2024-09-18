@@ -41,9 +41,9 @@ CHINESE = {
 RECOGNITION = {
     'basics': {
         'id': random.randrange(1<<30,1<<31),
-        'deck_title': '',
+        'deck_title': 'CLASSES_VOCABULARY',
         'model_name': 'recognition_model',
-        'filename': f'{os.getenv('ANKIFILE')}recognition-{datetime.datetime.year}-{datetime.datetime.month}-{datetime.datetime.day}.apkg',
+        'filename': f"{os.getenv('ANKIFILE')}CLASSES_VOCABULARY-{datetime.datetime.now().year}-{datetime.datetime.now().month}-{datetime.datetime.now().day}.apkg",
         'note_type': 'reading'
     },
     'model_fields': [
@@ -51,6 +51,7 @@ RECOGNITION = {
         {"name": "Pinyin"},
         {"name": "Meaning1"},
         {"name": "Meaning2"},
+        {"name": "MeaningExtra"},
         {"name": "Sentence1"},
         {"name": "Sentence2"},
         {"name": "Sentence3"},
@@ -67,9 +68,25 @@ RECOGNITION = {
             ],
          'css': read_file('./templates/chinese/style.css'),
     },
-    'model_builder': ['hanzi','pinyin','meaning_english','meaning_spanish','sentence_1','sentence_2','sentence_3','part','audio']
+    'model_builder': ['hanzi','pinyin',
+                      'meaning_english','meaning_spanish',
+                      'meaning_extra',
+                      'sentence_1','sentence_2','sentence_3',
+                      'part','audio']
 }
 
+RECOGNITION_REZERO = {
+    'basics': {
+        'id': random.randrange(1<<30,1<<31),
+        'deck_title': 're:零',
+        'model_name': 'recognition_model',
+        'filename': f"{os.getenv('ANKIFILE')}re_零-{datetime.datetime.now().year}-{datetime.datetime.now().month}-{datetime.datetime.now().day}.apkg",
+        'note_type': 'reading'
+    },
+    'model_fields': RECOGNITION['model_fields'],
+    'model_templates': RECOGNITION['model_templates'],
+    'model_builder': RECOGNITION['model_builder']
+}
 PHOTO_PHOTO_BASIC = {
     'basics': {
         'id': random.randrange(1<<30,1<<31),
