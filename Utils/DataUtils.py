@@ -80,6 +80,7 @@ class DataUtils:
     @classmethod
     def read_csv(cls, path):
         df = pd.read_csv(path)
+        print(df)
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
         df = df.drop_duplicates(subset=['hanzi'])
         df = df.sort_values(by='frequency', ascending=False)

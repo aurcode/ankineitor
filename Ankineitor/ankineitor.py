@@ -47,7 +47,7 @@ class DeckGenerator:
     def __build_tags(self, card):
         tags = list()
         if 'categories' in self.columns and isinstance(card.get('categories'), str):
-            [tags.append(i) for i in card['categories'].split(', ')]
+            [tags.append("课程:"+i) for i in card['categories'].split(', ')]
         if 'time' in self.columns and isinstance(card.get('time'), str):
             tags.append('time:' + card['time'])
         if 'lesson' in self.columns and card.get('lesson') is not None:

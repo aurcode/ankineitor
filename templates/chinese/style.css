@@ -331,6 +331,10 @@ img {
     padding: 10px;
 }
 
+.meaning-extra-card {
+    padding-bottom: 10px;
+}
+
 .char {
     font-size: 30px;
 }

@@ -6,8 +6,6 @@ import os
 
 load_dotenv()
 debug = os.getenv('DEBUG')
-#filters = None
-filters = DataUtils.fetch_hsk_files()
 
 def process_uploaded_files(uploaded_files, debug=False):
     """Processes uploaded files by extracting Chinese characters, applying transformations, and returning combined DataFrame."""
@@ -29,24 +27,23 @@ def filters_df(df, stu, transformer, filters = None):
     """Filters the DataFrame based on frequency and applies DataTransformer for pinyin, translation, audio, and time."""
     # Filter DataFrame by frequency and HSK levels
     if df is not None:
-        if debug:
-            #n = 5
-            df_new = df
-            stu.print_DF(df_new, title='Extracted Chinese Characters')
-            n = stu.request_number()
-        if not debug:
-            if filters is None:
-                df_filtered, hsk = DataUtils.filter_dataframe(df, filters)
-                stu.print_DF(hsk, title='Filtered HSK Words')
-                stu.print_DF(df_filtered, title='NEW Words')
+        if filters is not None:
+            df_filtered, hsk = DataUtils.filter_dataframe(df, filters)
+            stu.print_DF(hsk, title='Filtered HSK Words')
+            stu.print_DF(df_filtered, title='NEW Words')
+
             if df_filtered is not None:
                 df_new = categories_and_transform(df_filtered, stu, transformer)
-            n = stu.request_number()
 
-        if n is not None and df_new is not None:
-            df_f = df_new[df_new['frequency']>n]
-            if df_f is not None:
-                return df_f
+                df_masked = filter_by_category(df_new, stu)
+
+                if df_masked is not None:
+                    n = stu.request_number()
+
+                    if n is not None and df_new is not None:
+                        df_f = df_new[df_new['frequency']>=n]
+                        if df_f is not None:
+                            return df_f
     return None
 
 def transformation_df(df, stu, transformer):
@@ -94,6 +91,7 @@ def create_deck(df, config, stu, key=''):
 def main():
     stu = stUtils()
     transformer = DataTransformer(pinyin=True, translation=True, audio=True, time=True)
+    filters = stu.get_filters()
     uploaded_files, file_names = stu.request_files()
     df1 = process_uploaded_files(uploaded_files, debug)
     df2 = filters_df(df1, stu, transformer, filters)
