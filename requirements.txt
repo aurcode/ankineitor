@@ -1,0 +1,16 @@
+tqdm
+jieba
+pydub
+deep-translator
+pinyin
+genanki
+gTTs
+python-dotenv
+pandas
+groq
+pymongo
+PyPDF2
+python-pptx
+tabulate
+streamlit
+loguru

@@ -1,4 +1,23 @@
 services:
+  python:
+    build:
+      context: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ${AUDIO_PATH}:/opt/AUDIO_PATH
+      - ${ANKIFILE}:/opt/ANKIFILE
+      - ${DATAFRAME_SAVE_PATH}:/opt/DATAFRAME_SAVE_PATH
+      - .:/src
+
+    entrypoint: /bin/bash # python #tester.py
+    depends_on:
+      - mongodb
+    env_file:
+      - .env
+    stdin_open: true  # Enable interactive mode
+    tty: true
+
   mongodb:
     image: mongo:latest
     container_name: mongodb
