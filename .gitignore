@@ -1,4 +1,5 @@
 # Custom
+*.csv
 audio*
 *.pdf
 history/

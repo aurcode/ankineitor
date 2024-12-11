@@ -1,105 +1,132 @@
 from dotenv import load_dotenv
 import os
-
-load_dotenv()
-
 import io
 import re
 import PyPDF2
-from typing import List, Union
+from typing import List, Union, Dict
 from pptx import Presentation
 import pandas as pd
 import jieba.posseg as pseg
+from loguru import logger
 
-class TextExtractor:
-    def __init__(self, uploaded_files: List[str], test: bool = os.getenv('DEBUG')):
-        self.test: bool = test
-        self.uploaded_files: List[str] = uploaded_files
-        self.text: Union[str, List] = []
-        self.phrases: List[str] = []
+# Load environment variables
+load_dotenv()
 
-    def extract_text(self):
-        for file_name, file_content in self.uploaded_files.items():
-            if file_name.lower().endswith('.pdf'):
-                self._extract_text_from_pdf(file_content)
-            elif file_name.lower().endswith('.pptx'):
-                self._extract_text_from_pptx(file_content)
-            elif file_name.lower().endswith('.txt'):
-                self._extract_text_from_txt(file_content)
-            else:
-                print(f'Unsupported file type: {file_name}')
+class FileHandler:
+    """Handles extraction of text from different file formats."""
 
-        self.text = '。'.join(self.text)
+    def __init__(self, file_content: bytes, test: bool = False):
+        self.file_content = file_content
+        self.test = test
 
-    def _extract_text_from_txt(self, file_content):
-        # Assuming the file content is in bytes, decode it
-        text = file_content.decode('utf-8')
-        self.text.append(text)
+    def extract_text(self, file_name: str) -> List[str]:
+        """Dispatch to the correct method based on file extension."""
+        file_extension = file_name.lower().split('.')[-1]
 
-    def _extract_text_from_pdf(self, file_content):
-        pdf_file = io.BytesIO(file_content)
+        if file_extension == 'pdf':
+            return self._extract_text_from_pdf()
+        elif file_extension == 'pptx':
+            return self._extract_text_from_pptx()
+        elif file_extension == 'txt':
+            return self._extract_text_from_txt()
+        else:
+            raise ValueError(f"Unsupported file type: {file_extension}")
+
+    def _extract_text_from_txt(self) -> List[str]:
+        """Extract text from a txt file."""
+        text = self.file_content.decode('utf-8')
+        return [text]
+
+    def _extract_text_from_pdf(self) -> List[str]:
+        """Extract text from a PDF file."""
+        pdf_file = io.BytesIO(self.file_content)
         pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = []
         num_pages = len(pdf_reader.pages)
-        if self.test:
-            max_page: int = 3
-            page_count: int = 0
-        for page_num in range(num_pages):
-            page = pdf_reader.pages[page_num]
-            page.extract_text()
-            self.text.append(page.extract_text())
-            self.phrases.append(page.extract_text())
-            if self.test:
-                page_count += 1
-                if page_count == max_page:
-                    break
 
-    def _extract_text_from_pptx(self, file_content):
-        pptx_file = io.BytesIO(file_content)
+        # Optionally limit the pages for testing purposes
+        max_page = 3 if self.test else num_pages
+        for page_num in range(min(max_page, num_pages)):
+            page = pdf_reader.pages[page_num]
+            text.append(page.extract_text())
+
+        return text
+
+    def _extract_text_from_pptx(self) -> List[str]:
+        """Extract text from a PowerPoint file."""
+        pptx_file = io.BytesIO(self.file_content)
         presentation = Presentation(pptx_file)
-        if self.test:
-            max_page: int = 3
-            page_count: int = 0
-        for slide in presentation.slides:
+        text = []
+
+        max_page = 3 if self.test else len(presentation.slides)
+        for slide in presentation.slides[:max_page]:
             for shape in slide.shapes:
                 if shape.has_text_frame:
                     for paragraph in shape.text_frame.paragraphs:
                         for run in paragraph.runs:
-                            self.text.append(run.text)
-            if self.test:
-                page_count += 1
-                if page_count == max_page:
-                    break
+                            text.append(run.text)
+        return text
 
-    def separated_chinese_characters(self, phrases=False):
+
+class TextExtractor:
+    """Class responsible for text extraction and processing from uploaded files."""
+
+    def __init__(self, uploaded_files: Dict[str, bytes], dev_enabled: bool = os.getenv('DEBUG')):
+        self.dev_enabled = dev_enabled
+        self.uploaded_files = uploaded_files
+        self.text: Union[str, List[str]] = []
+        self.phrases: List[str] = []
+
+    def extract_text(self):
+        """Extract text from all uploaded files."""
+        for file_name, file_content in self.uploaded_files.items():
+            file_handler = FileHandler(file_content, self.dev_enabled)
+            file_text = file_handler.extract_text(file_name)
+            self.text.extend(file_text)
+        self.text = '。'.join(self.text)
+
+    def separated_chinese_characters(self, phrases=False) -> pd.DataFrame:
+        """Separate and return Chinese characters along with their frequency and part-of-speech."""
         chinese_regex = r'[\u4E00-\u9FFF]+'
         chinese_characters = '。'.join(re.findall(chinese_regex, self.text))
-        seg_list = list(pseg.cut(chinese_characters,use_paddle=True))
-        df=pd.DataFrame(set(seg_list), columns=["hanzi", "part"])
-        df=df[df['hanzi']!='。']
+        seg_list = list(pseg.cut(chinese_characters, use_paddle=True))
+
+        # Create a DataFrame from the segmented list
+        df = pd.DataFrame(set(seg_list), columns=["hanzi", "part"])
+        df = df[df['hanzi'] != '。']
         df = df.groupby('hanzi')['part'].agg(lambda x: ', '.join(x)).reset_index()
 
-        df_aux=pd.DataFrame(seg_list, columns=["hanzi", "part"])
+        df_aux = pd.DataFrame(seg_list, columns=["hanzi", "part"])
         df_aux['frequency'] = df_aux['hanzi'].map(df_aux['hanzi'].value_counts())
 
         if phrases:
             self.phrases = self.extract_phrases()
 
-        return pd.merge(df, df_aux, on='hanzi', how='left')[['hanzi','part_x','frequency']].drop_duplicates(subset='hanzi').rename(columns={'part_x':'part'}).sort_values(by='frequency', ascending=False).reset_index(drop=True)
+        # Merge frequency data and return cleaned DataFrame
+        return pd.merge(df, df_aux, on='hanzi', how='left')[['hanzi', 'part_x', 'frequency']] \
+            .drop_duplicates(subset='hanzi') \
+            .rename(columns={'part_x': 'part'}) \
+            .sort_values(by='frequency', ascending=False) \
+            .reset_index(drop=True)
 
-    def extract_phrases(self, split_n: int = 12, min_characters_n = 6):
+    def extract_phrases(self, split_n: int = 12, min_characters_n: int = 6) -> List[str]:
+        """Extract meaningful phrases from text."""
         text_new = self._format_text(self.text, split_n)
-        para = re.sub("([。！？\?])([^”'])", r"\1\n\2", text_new)
-        para = re.sub("(\.{6})([^”'])", r"\1\n\2", para)
-        para = re.sub("(\…{2})([^”'])", r"\1\n\2", para)
-        para = re.sub("([。！？\?][”'])([^，。！？\?])", r'\1\n\2', para)
+        para = self._apply_text_formatting(text_new)
+        return [i for i in para if len(i) >= min_characters_n and re.search(r'[\u4e00-\u9fff]+', i)]
+
+    def _apply_text_formatting(self, text: str) -> List[str]:
+        """Apply common text formatting (split by punctuation)."""
+        para = re.sub(r"([。！？\?])([^”'])", r"\1\n\2", text)
+        para = re.sub(r"(\.{6})([^”'])", r"\1\n\2", para)
+        para = re.sub(r"(\…{2})([^”'])", r"\1\n\2", para)
+        para = re.sub(r"([。！？\?][”'])([^，。！？\?])", r'\1\n\2', para)
         para = para.rstrip()
         para = list(set(para.split("\n")))
-        pattern = re.compile(r'[\u4e00-\u9fff]+')
-        return [i for i in para
-                if bool(re.search(pattern, i))
-                if len(''.join(re.findall(pattern,i)))>=min_characters_n]
+        return para
 
-    def _format_text(self,text:str, split_n: int):
+    def _format_text(self, text: str, split_n: int) -> str:
+        """Format text into smaller segments."""
         lines = text.split('\n')
         result = []
         current_line = ''
@@ -115,14 +142,22 @@ class TextExtractor:
 
         if current_line:
             result.append(current_line)
-        formatted_text = ''.join(result)
-        return formatted_text[:2000]
+        return ''.join(result)[:2000]
+
+    @staticmethod
+    def read_files_to_uploaded(file_paths: List[str]) -> Dict[str, bytes]:
+        """Reads files from the given paths and returns a dictionary of file content."""
+        uploaded_files = {}
+        for file_path in file_paths:
+            with open(file_path, 'rb') as file:
+                uploaded_files[os.path.basename(file_path)] = file.read()
+        return uploaded_files
+
 
 if __name__ == '__main__':
-    uploaded_files = TextExtractor.read_files_to_uploaded(['./电路CLASSES.pdf'], )
-    extractor = TextExtractor(uploaded_files, test=True)
+    uploaded_files = TextExtractor.read_files_to_uploaded(['./电路CLASSES.pdf'])
+    extractor = TextExtractor(uploaded_files, dev_enabled=True)
     extractor.extract_text()
-    #print(extractor.phrases[:20])
-    #print(extractor.extract_phrases())
-    #extractor.separatedChineseCharacters()
-    #extractor.printDF()
+    df = extractor.separated_chinese_characters(phrases=True)
+    logger.info(f"Extracted {len(df)} rows of data.")
+    print(df.head())
