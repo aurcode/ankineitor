@@ -195,10 +195,10 @@ class TextExtractor:
         return uploaded_files
 
 
-if __name__ == '__main__':
-    uploaded_files = TextExtractor.read_files_to_uploaded(['./电路CLASSES.pdf'])
-    extractor = TextExtractor(uploaded_files, dev_enabled=False)
-    extractor.extract_text()
-    df = extractor.separated_chinese_characters()
-    logger.info(f"Extracted {len(df)} rows of data.")
-    print(df.head())
+#if __name__ == '__main__':
+    #uploaded_files = TextExtractor.read_files_to_uploaded(['./电路CLASSES.pdf'])
+    #extractor = TextExtractor(uploaded_files, dev_enabled=False)
+    #extractor.extract_text()
+    #df = extractor.separated_chinese_characters()
+    #logger.info(f"Extracted {len(df)} rows of data.")
+    #print(df.head())

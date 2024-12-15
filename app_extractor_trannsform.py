@@ -23,12 +23,12 @@ def process_uploaded_files(uploaded_files, debug=False):
         return df
     return None
 
-def filters_df(df, stu, transformer, filters = None):
+def filters_df(df, stu, transformer, filters = None, filter_column_name = 'word'):
     """Filters the DataFrame based on frequency and applies DataTransformer for pinyin, translation, audio, and time."""
     # Filter DataFrame by frequency and HSK levels
     if df is not None:
         if filters is not None:
-            df_filtered, hsk = DataUtils.filter_dataframe(df, filters)
+            df_filtered, hsk = DataUtils.filter_dataframe(df, filters, filter_column_name)
             stu.print_DF(hsk, title='Filtered HSK Words')
             stu.print_DF(df_filtered, title='NEW Words')
 
@@ -50,9 +50,9 @@ def transformation_df(df, stu, transformer):
     if df is not None:
         new_df = df.copy()
         # Apply DataTransformer for pinyin, translation, audio, and time
-        _df = transformer.transform_data(df['hanzi'])
+        _df = transformer.transform_data(df['word'])
         # Combine original and transformed DataFrames
-        combined_df = DataUtils().combine_dataframes(new_df, _df, 'hanzi')
+        combined_df = DataUtils().combine_dataframes(new_df, _df, 'word')
         stu.print_DF(combined_df, title='Transformed & Combined DataFrame')
         stu.st.write(f'Your dataframe len is: {len(combined_df)}')
         return combined_df
@@ -90,7 +90,7 @@ def create_deck(df, config, stu, key=''):
 
 def main():
     stu = stUtils()
-    transformer = DataTransformer(pinyin=True, translation=True, audio=True, time=True)
+    transformer = DataTransformer(pinyin_enabled=True, translation_enabled=True, audio_enabled=True, timestamp_enabled=True, save_enabled=True)
     filters = stu.get_filters()
     uploaded_files, file_names = stu.request_files()
     df1 = process_uploaded_files(uploaded_files, debug)

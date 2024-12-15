@@ -1,6 +1,7 @@
 import os
 import datetime
 import pandas as pd
+from typing import List
 from dotenv import load_dotenv
 from tabulate import tabulate
 from loguru import logger
@@ -79,13 +80,63 @@ class DataFrameUtils:
             raise
 
     @staticmethod
-    def filter_dataframe(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
-        """Filter a DataFrame using the provided filters dictionary."""
+    def combine_dataframes_sum_frequencies(dataframes: List[pd.DataFrame], key_columns: List[str]) -> pd.DataFrame:
+        """
+        Combine multiple DataFrames by summing the 'frequency' column for matching keys.
+
+        Args:
+            dataframes (list of pd.DataFrame): List of DataFrames to combine.
+            key_columns (list of str): Columns to use for merging DataFrames.
+
+        Returns:
+            pd.DataFrame: A combined DataFrame with summed 'frequency' values and specified key columns.
+        """
+        if not dataframes:
+            raise ValueError("The list of DataFrames is empty.")
+        combined_df = dataframes[0].copy()
+
+        for df in dataframes[1:]:
+            combined_df = pd.merge(combined_df, df, on=key_columns, how='outer', suffixes=('_left', '_right'))
+
+            combined_df['frequency'] = combined_df[['frequency_left', 'frequency_right']].sum(axis=1, skipna=True)
+            combined_df.drop(columns=['frequency_left', 'frequency_right'], inplace=True)
+            combined_df = combined_df[key_columns + ['frequency']]
+        combined_df.reset_index(drop=True, inplace=True)
+
+        return combined_df[key_columns + ['frequency']]
+
+
+    @staticmethod
+    def filter_dataframe(df: pd.DataFrame, filters: dict, filter_column_name: str) -> pd.DataFrame:
+        """Filter a DataFrame using the provided filters dictionary and return two DataFrames:
+            one with the filtered data and another with the excluded data.
+
+            Returns:
+                tuple:
+                    pd.DataFrame: The DataFrame with rows that do not match the filters.
+                    pd.DataFrame: The DataFrame with rows that match the filters
+        """
         try:
-            for filter_name, filter_data in filters.items():
-                df = df[df[filter_name].isin(filter_data)]
-            logger.info("DataFrame filtered successfully.")
-            return df
+            # Log the initial state of the DataFrame and filters
+            logger.debug(f"Initial DataFrame shape: {df.shape}")
+            logger.debug(f"Filter column: {filter_column_name}, Filters: {filters.keys()}")
+
+            # Combine all filter values into a single set
+            allowed_values = set()
+            for filter_data in filters.values():
+                allowed_values.update(filter_data['hanzi'])
+
+            # Ensure the filter column exists
+            if filter_column_name not in df.columns:
+                raise KeyError(f"Column '{filter_column_name}' not found in DataFrame.")
+
+            # Filter the DataFrame
+            filtered_df = df[df[filter_column_name].isin(allowed_values)]
+            excluded_df = df[~df[filter_column_name].isin(allowed_values)]
+
+            # Log the resulting shapes
+            logger.info(f"DataFrame filtered successfully. Filtered shape: {filtered_df.shape}, Excluded shape: {excluded_df.shape}")
+            return excluded_df, filtered_df
         except Exception as e:
             logger.error(f"Error filtering DataFrame: {e}")
             raise
@@ -153,11 +204,20 @@ class DataUtils:
         return DataFrameUtils.combine_dataframes(df1, df2, column)
 
     @classmethod
-    def filter_dataframe(cls, df: pd.DataFrame, filters: dict):
+    def combine_dataframes_sum_frequencies(cls, dataframes: List[pd.DataFrame], key_columns: List[str]) -> pd.DataFrame:
+        """Combine Two DataFrames on the specified column and sum the frequencies"""
+        return DataFrameUtils.combine_dataframes_sum_frequencies(dataframes, key_columns)
+
+    @classmethod
+    def filter_dataframe(cls, df: pd.DataFrame, filters: dict, filter_column_name: str):
         """Filter the DataFrame with given filters."""
-        return DataFrameUtils.filter_dataframe(df, filters)
+        return DataFrameUtils.filter_dataframe(df, filters, filter_column_name)
 
     @classmethod
     def fetch_hsk_files(cls):
         """Fetch HSK files from URLs."""
         return HSKDataFetcher.fetch_hsk_files()
+
+    @classmethod
+    def read_csv(cls, file_path: str) -> pd.DataFrame:
+        return pd.read_csv(file_path, sep=',')

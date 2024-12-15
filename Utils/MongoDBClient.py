@@ -87,10 +87,10 @@ class MongoDBClient:
 
     # Specific for categories
 
-    def get_categories_by_word(self, key: str, collection_name: str = 'word') -> List[str]:
+    def get_categories_by_word(self, key: str, collection_name: str = 'hanzi_processing') -> List[str]:
         """Retrieve categories associated with a 'word'."""
         try:
-            record = self.find_record(key, collection_name)
+            record = self.find_record(key, collection_name, 'word')
             if record and 'categories' in record:
                 return [i for i in record['categories'] if i is not None]
             return []
@@ -98,7 +98,7 @@ class MongoDBClient:
             logger.error(f"Error getting categories for '{key}': {e}")
             return []
 
-    def get_all_categories(self, collection_name: str = 'word') -> List[str]:
+    def get_all_categories(self, collection_name: str = 'hanzi_processing') -> List[str]:
         """Retrieve all distinct categories in the collection."""
         try:
             return [i for i in self.db[collection_name].distinct("categories") if i is not None]
@@ -106,7 +106,7 @@ class MongoDBClient:
             logger.error(f"Error retrieving categories: {e}")
             return []
 
-    def add_category(self, key: str, new_category: str, collection_name: str = 'word', field_name: str = 'word') -> None:
+    def add_category(self, key: str, new_category: str, collection_name: str = 'hanzi_processing', field_name: str = 'word') -> None:
         """Add a new category to a specific 'word'."""
         if new_category is None:
             logger.warning(f"Cannot add None as a category for '{key}'.")
