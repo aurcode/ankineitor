@@ -57,7 +57,7 @@ class ChineseWordProcessor:
         if example_sentences and improved_meaning:
             logger.info(f"Skipping word {word} as it already has example sentences and meaning.")
             return {
-                "hanzi": word,
+                "word": word,
                 "example_sentences": example_sentences,
                 "improved_meaning": improved_meaning,
                 "pinyin": 'f'
@@ -90,9 +90,9 @@ class ChineseWordProcessor:
             f"使用简体中文字符生成 3 个示例句子，其中包含中文词 '{word}'。"
             "每个句子应仅使用简体中文字符。"
             "不解释，不包含标题，只输出句子。格式如下：\n"
-            "1: [句子]。\n"
-            "2: [句子]。\n"
-            "3: [句子]。\n"
+            "1：[句子]。\n"
+            "2：[句子]。\n"
+            "3：[句子]。\n"
         )
         return self.api_client.send_prompt(prompt)
 
@@ -101,9 +101,7 @@ class ChineseWordProcessor:
         Generates or improves the meaning of the word in both English and Spanish.
         """
         prompt = (
-            f"为每个分类提供中文词 '{word}' 的基本含义，用英语和西班牙语描述。"
-             "如果没有在一个分类中使用，则什么也不写。"
-             "如果没有分类，只写翻译式句子的解释"
+            f"提供中文词 '{word}' 的基本含义，用英语和西班牙语描述。"
              "解释应简明清晰，仅提供必要信息而不包含额外背景。"
              "不解释，不包含标题，只输出结果。格式如下：\n"
              "english: [含义]。\n"
@@ -134,12 +132,13 @@ class ChineseWordProcessor:
         """
         for idx, row in df.iterrows():
             sentences = row['example_sentences'].split('\n')
-            for i, part in enumerate(sentences, start=1):
-                if part.startswith(f"{i}:"):
-                    df.at[idx, f'sentence_{i}'] = part[len(f"{i}:"):].strip()
 
-            logger.info(row['example_sentences'])
+            logger.info(sentences)
             logger.info(row['improved_meaning'])
+
+            for i, part in enumerate(sentences, start=1):
+                if part.startswith(f"{i}："):
+                    df.at[idx, f'sentence_{i}'] = part[len(f"{i}："):].strip()
 
             meanings = row['improved_meaning'].split('\n')
             for part in meanings:
@@ -150,7 +149,7 @@ class ChineseWordProcessor:
                     df.at[idx, 'meaning_spanish'] = part[len("spanish: "):].strip()
 
             if(os.getenv('DEBUG')):
-                logger.info(f'{row['hanzi']}')
+                logger.info(f'{row['word']}')
                 logger.info(f'{row['meaning_english']}')
                 logger.info(f'{row['meaning_spanish']}')
                 logger.info(f'{row['sentence_1']}')
@@ -162,6 +161,7 @@ class ChineseWordProcessor:
         return df
 
     def _handle_missing_values(self, df: pd.DataFrame):
+        ## Here not working properly
         """
         Handle missing values in sentences and meanings.
         """
@@ -169,9 +169,9 @@ class ChineseWordProcessor:
             if pd.isna(row['sentence_1']) or not row['sentence_1'].strip() or \
                pd.isna(row['sentence_2']) or not row['sentence_2'].strip() or \
                pd.isna(row['sentence_3']) or not row['sentence_3'].strip():
-                logger.warning(f"Missing example sentences for word {row['hanzi']} at index {idx}")
-                self.mongo_client.update_field(record=row,value='',collection_name=self.collection_name,field_name=self.field_name)
+                logger.warning(f"Missing example sentences for word {row['word']} at index {idx}")
+                self.mongo_client.update_field(record=row,value='',collection_name=self.collection_name,field_name="example_sentence")
             if pd.isna(row['meaning_english']) or not row['meaning_english'].strip() or \
                pd.isna(row['meaning_spanish']) or not row['meaning_spanish'].strip():
-                logger.warning(f"Missing meaning for word {row['hanzi']} at index {idx}")
-                self.mongo_client.update_field(record=row,value='',collection_name=self.collection_name,field_name=self.field_name)
+                logger.warning(f"Missing meaning for word {row['word']} at index {idx}")
+                self.mongo_client.update_field(record=row,value='',collection_name=self.collection_name,field_name="example_sentence")

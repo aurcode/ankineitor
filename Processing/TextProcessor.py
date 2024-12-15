@@ -262,7 +262,7 @@ class DataTransformer:
     """
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
             if category:
-                self.mongo_client.add_category(row['word'], category)
-            categories = self.mongo_client.get_categories(row['word'])
+                self.mongo_client.add_category(row['word'], category, self.collection_name, self.field_name)
+            categories = self.mongo_client.get_categories_by_word(row['word'], self.collection_name)
             df.loc[index, 'categories'] = ', '.join(categories)
         return df.reset_index(drop=True)

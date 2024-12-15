@@ -112,7 +112,7 @@ class stUtils:
                 dfs.append(df)
                 st.write(f'Preview of the uploaded DataFrame from {file.name}:')
             if dfs != []:
-                dfs_combined = DataUtils.combine_dataframes_sum_frequencies(dfs).sort_values(by='frequency', ascending=False)
+                dfs_combined = DataUtils.combine_dataframes_sum_frequencies(dfs, ['word','part']).sort_values(by='frequency', ascending=False)
                 self.print_DF(dfs_combined, 'Combined DF')
                 return dfs_combined
 

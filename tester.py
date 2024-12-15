@@ -21,7 +21,7 @@ dt = DataTransformer(
 
 
 
-gg = pd.DataFrame({"hanzi": ['的','啥意思','明白了吗']}).hanzi
+gg = pd.DataFrame({"word": ['的','啥意思','明白了吗']}).word
 
 dt.transform_data(gg)
 

@@ -33,9 +33,9 @@ def transformation_df(df, stu, transformer):
     if df is not None:
         new_df = df.copy()
         # Apply DataTransformer for pinyin, translation, audio, and time
-        _df = transformer.transform_data(df['hanzi'])
+        _df = transformer.transform_data(df['word'])
         # Combine original and transformed DataFrames
-        combined_df = DataUtils().combine_dataframes(new_df, _df, 'hanzi')
+        combined_df = DataUtils().combine_dataframes(new_df, _df, 'word')
         stu.print_DF(combined_df, title='Transformed & Combined DataFrame')
         stu.st.write(f'Your dataframe len is: {len(combined_df)}')
         combined_df.to_csv('final.csv')
@@ -47,7 +47,7 @@ def create_deck(config, stu, key='', df_name='final_with_ai.csv'):
             if not stu.st.session_state['deck_created']:
                 df = DataUtils.read_csv(df_name)
                 dt = DataTransformer(audio=True)
-                df['audio'] = dt.transform_data(df['hanzi'])['audio']
+                df['audio'] = dt.transform_data(df['word'])['audio']
                 generator = DeckGenerator(df, config)
                 filepath = generator.generate_decks()
                 stu.st.write(f'Deck successfully created in {filepath}')
@@ -58,7 +58,7 @@ def create_deck(config, stu, key='', df_name='final_with_ai.csv'):
 
 def main():
     stu = stUtils()
-    dt = DataTransformer(pinyin=True, translation=True, audio=True, time=True)
+    dt = DataTransformer(pinyin_enabled=True, translation_enabled=True, audio_creator=True, timestamp_enabled=True, save_enabled=True)
     cwp = ChineseWordProcessor()
 
     df1 = stu.choose_dataframes()
@@ -69,9 +69,9 @@ def main():
     if stu.create_button('Improve with AI'):
         df = DataUtils.read_csv('./final.csv')
         stu.print_DF(df)
-        df_new = cwp.process_words(list(df['hanzi']), dict(df['translation']))
+        df_new = cwp.process_words(list(df['word']), dict(df['translation']))
         stu.print_DF(df_new)
-        df_final = DataUtils.combine_dataframes(df, df_new, 'hanzi')
+        df_final = DataUtils.combine_dataframes(df, df_new, 'word')
         for idx, row in df_final.iterrows():
             try:
                 df_final.at[idx, 'meaning_extra'] = " "
