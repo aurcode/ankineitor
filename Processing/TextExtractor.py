@@ -12,6 +12,47 @@ from loguru import logger
 # Load environment variables
 load_dotenv()
 
+import hashlib
+
+'''class MongoHandler:
+    def __init__(self, collection_name: str = 'file_results'):
+        self.client = MongoDBClient()
+        self.collection_name = collection_name
+        self.field_name = "file_hash"
+
+    def get_result(self, file_name: str) -> Union[None, pd.DataFrame]:
+        """Retrieve the result from MongoDB if it already exists."""
+        file_hash = self._get_file_hash(file_name)
+        result = self.client.find_record(key=file_hash,
+                                         collection_name=self.collection_name,
+                                         field_name=self.field_name)
+        if result:
+            # Convert the stored result back to a DataFrame
+            return pd.read_json(result['data'])
+        return None
+
+    def save_result(self, file_name: str, df: pd.DataFrame):
+        """Save the processing results into MongoDB."""
+        file_hash = self._get_file_hash(file_name)
+        data = df.to_json()  # Save the DataFrame as JSON
+        record = {self.field_name: file_hash, "data": data}
+
+        try:
+            self.client.insert_record(
+                record=record,
+                columns=["file_name", "data"],
+                collection_name="results",
+                field_name="file_name"
+            )
+            logger.info(f"Record for '{file_hash}' saved in MongoDB.")
+        except Exception as e:
+            logger.error(f"Error saving record for '{file_hash}' in MongoDB: {e}")
+
+    def _get_file_hash(self, file_name: str) -> str:
+        """Generate a unique hash for the file."""
+        return hashlib.md5(file_name.encode()).hexdigest()
+'''
+
 class FileHandler:
     """Handles extraction of text from different file formats."""
 
@@ -92,19 +133,19 @@ class TextExtractor:
         seg_list = list(pseg.cut(chinese_characters, use_paddle=True))
 
         # Create a DataFrame from the segmented list
-        df = pd.DataFrame(set(seg_list), columns=["hanzi", "part"])
-        df = df[df['hanzi'] != '。']
-        df = df.groupby('hanzi')['part'].agg(lambda x: ', '.join(x)).reset_index()
+        df = pd.DataFrame(set(seg_list), columns=["word", "part"])
+        df = df[df['word'] != '。']
+        df = df.groupby('word')['part'].agg(lambda x: ', '.join(x)).reset_index()
 
-        df_aux = pd.DataFrame(seg_list, columns=["hanzi", "part"])
-        df_aux['frequency'] = df_aux['hanzi'].map(df_aux['hanzi'].value_counts())
+        df_aux = pd.DataFrame(seg_list, columns=["word", "part"])
+        df_aux['frequency'] = df_aux['word'].map(df_aux['word'].value_counts())
 
         if phrases:
             self.phrases = self.extract_phrases()
 
         # Merge frequency data and return cleaned DataFrame
-        return pd.merge(df, df_aux, on='hanzi', how='left')[['hanzi', 'part_x', 'frequency']] \
-            .drop_duplicates(subset='hanzi') \
+        return pd.merge(df, df_aux, on='word', how='left')[['word', 'part_x', 'frequency']] \
+            .drop_duplicates(subset='word') \
             .rename(columns={'part_x': 'part'}) \
             .sort_values(by='frequency', ascending=False) \
             .reset_index(drop=True)
@@ -156,8 +197,8 @@ class TextExtractor:
 
 if __name__ == '__main__':
     uploaded_files = TextExtractor.read_files_to_uploaded(['./电路CLASSES.pdf'])
-    extractor = TextExtractor(uploaded_files, dev_enabled=True)
+    extractor = TextExtractor(uploaded_files, dev_enabled=False)
     extractor.extract_text()
-    df = extractor.separated_chinese_characters(phrases=True)
+    df = extractor.separated_chinese_characters()
     logger.info(f"Extracted {len(df)} rows of data.")
     print(df.head())

@@ -21,12 +21,16 @@ dt = DataTransformer(
 
 
 
-gg = pd.DataFrame({"hanzi": ['然后','','你好']}).hanzi
+gg = pd.DataFrame({"hanzi": ['的','啥意思','明白了吗']}).hanzi
 
+dt.transform_data(gg)
 
 cwp = ChineseWordProcessor()
-print(cwp.process_words(gg))
+cwp.process_words(gg)
 
+#cwp.process_words(gg)
+
+#print(cwp.process_words(gg).columns)
 
 #print(dt.transform_data(gg))
 

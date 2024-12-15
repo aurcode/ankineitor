@@ -1,3 +1,4 @@
+from loguru import logger
 from deep_translator import GoogleTranslator
 from gtts import gTTS
 from datetime import datetime
@@ -24,7 +25,7 @@ class AudioCreator:
             folder_name (str): Path to the folder where audio files will be saved. Defaults to `AUDIO_PATH` environment variable.
             language (str): Language for text-to-speech. Defaults to 'zh' (Chinese).
         """
-        self.folder_name: str = '/opt/audio/' if os.getenv('DOCKER') else os.getenv('AUDIO_PATH')
+        self.folder_name: str = '/opt/audio/' if os.getenv('DOCKER') else os.getenv('AUDIO_PATH') if folder_name else folder_name
         self.language: str = language
         self.paths: List[str] = []
 
@@ -64,9 +65,10 @@ class AudioCreator:
         try:
             speech = gTTS(text=text, lang=self.language, slow=False)
             speech.save(audio_file)
+            logger.info(f"Audio created: {audio_file}")
             return audio_file
         except Exception as e:
-            print(f"Error creating audio for text '{text}': {e}")
+            logger.error(f"Error creating audio for text '{text}': {e}")
             return None
 
     def create_audios(self, texts: List[str]) -> List[str]:
@@ -80,7 +82,7 @@ class AudioCreator:
             List[str]: List of paths to the generated audio files.
         """
         os.makedirs(self.folder_name, exist_ok=True)
-        print("Creating audio files...")
+        logger.info("Starting audio file creation...")
 
         for text in tqdm(texts, desc="Audio creation"):
             sanitized_name = self._sanitize_text(text)
@@ -89,6 +91,7 @@ class AudioCreator:
             if audio_file:
                 self.paths.append(audio_file)
 
+        logger.info(f"Audio file creation complete. {len(self.paths)} files generated.")
         return self.paths
 
 class DataTransformer:
@@ -135,6 +138,8 @@ class DataTransformer:
         self.dev_enabled = dev_enabled
         self.max_records = 20 if self.dev_enabled else None
         self.mongo_client = mongo_client
+        self.collection_name = 'hanzi_processing'
+        self.field_name = 'word'
         self.audio_creator = audio_creator
 
 
@@ -142,7 +147,7 @@ class DataTransformer:
         """
         Determine columns based on enabled options.
         """
-        base_columns = ['hanzi']
+        base_columns = ['word']
         optional_columns = [
             column for column, enabled in {
                 'pinyin': self.pinyin_enabled,
@@ -167,14 +172,15 @@ class DataTransformer:
         """
         if self.traditional_enabled:
             self.columns.append('traditional')
-            df['traditional'] = df['hanzi']
+            df['traditional'] = df['word']
             converter = OpenCC('t2s')
-            df['hanzi'] = df['hanzi'].apply(converter.convert)
+            df['word'] = df['word'].apply(converter.convert)
         return df
 
     def _generate_audio(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.audio_enabled and self.audio_creator:
-            self.audio_creator.create_audios(list(df['hanzi']))
+            logger.info("Generating audio files for hanzi.")
+            self.audio_creator.create_audios(list(df['word']))
             df['audio'] = self.audio_creator.paths
         return df
 
@@ -193,24 +199,27 @@ class DataTransformer:
         """
         Transform a single row of data.
         """
-        print("Transforming with translation and pinyin")
+        logger.info(f"Transforming row for hanzi: {row['word']}")
         if self.translation_enabled:
-            row['translation'] = self._translate_word(row['hanzi'])
+            row['translation'] = self._translate_word(row['word'])
 
         if self.pinyin_enabled:
-            row['pinyin'] = pinyin.get(row['hanzi'], delimiter=" ")
+            row['pinyin'] = pinyin.get(row['word'], delimiter=" ")
 
         if self.save_enabled and self.pinyin_enabled and self.translation_enabled:
-            self.mongo_client.insert_record(row.to_dict(), ['pinyin', 'translation', 'timestamp'])
+            self.mongo_client.insert_record(record=row.to_dict(), columns=['pinyin', 'translation', 'timestamp'], collection_name=self.collection_name, field_name=self.field_name)
 
+        logger.info(f'Create a new register for {row['word']}')
+        logger.info(f'translation: {row['translation']}')
+        logger.info(f'translation: {row['pinyin']}')
         return row
 
     def transform_data(self, words: List[str]) -> pd.DataFrame:
         """
         Transform a list of Chinese words.
         """
-        print("Starting data transformation...")
-        df = pd.DataFrame({'hanzi': words}).replace('', np.nan).dropna()
+        logger.info("Starting data transformation...")
+        df = pd.DataFrame({'word': words}).replace('', np.nan).dropna()
 
         if self.pinyin_enabled:
             df['pinyin'] = None
@@ -229,11 +238,12 @@ class DataTransformer:
 
 
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
-            existing_record = self.mongo_client.find_record(row['hanzi'])
+            existing_record = self.mongo_client.find_record(key=row['word'], collection_name=self.collection_name, field_name=self.field_name)
             if existing_record:
                 for column in ['pinyin', 'translation']:
                     row[column] = existing_record.get(column, row.get(column))
                 if row['pinyin'] and row['translation']:
+                    logger.info(f'{row["word"]} has already been processed previously. {row["pinyin"]} {row["translation"]}')
                     df.loc[index] = row
                     continue
 
@@ -241,9 +251,9 @@ class DataTransformer:
             df.loc[index] = row
 
         df = self._generate_audio(df)
-        self.mongo_client.delete_duplicates()
+        self.mongo_client.delete_duplicates(collection_name=self.collection_name, field_name=self.field_name)
 
-        print("Data transformation complete.")
+        logger.info(f"Data transformation complete. DataFrame is {len(df)}")
         return df[self.columns]
 
     def transform_categories(self, df: pd.DataFrame, category: Optional[str] = None) -> pd.DataFrame:
@@ -252,7 +262,7 @@ class DataTransformer:
     """
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
             if category:
-                self.mongo_client.add_category(row['hanzi'], category)
-            categories = self.mongo_client.get_categories(row['hanzi'])
+                self.mongo_client.add_category(row['word'], category)
+            categories = self.mongo_client.get_categories(row['word'])
             df.loc[index, 'categories'] = ', '.join(categories)
         return df.reset_index(drop=True)

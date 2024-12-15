@@ -34,11 +34,13 @@ class GroqAPIClient:
 class ChineseWordProcessor:
     def __init__(
             self,
-            mongo_client: MongoDBClient = MongoDBClient(collection_name='llm_predicts'),
+            mongo_client: MongoDBClient = MongoDBClient(),
             api_client: GroqAPIClient = GroqAPIClient(),
             max_retries: int = 3,
         ):
         self.mongo_client = mongo_client
+        self.collection_name = 'llm_inference'
+        self.field_name = 'word' #'hanzi'
         self.api_client = api_client
         self.max_retries = max_retries
 
@@ -47,7 +49,7 @@ class ChineseWordProcessor:
         Generates example sentences and improved meaning for a given Chinese word.
         """
         logger.info(f"Processing word: {word}")
-        existing_record = self.mongo_client.find_record(word)
+        existing_record = self.mongo_client.find_record(key=word, collection_name=self.collection_name, field_name=self.field_name)
 
         example_sentences = existing_record.get('example_sentences') if existing_record else None
         improved_meaning = existing_record.get('improved_meaning') if existing_record else None
@@ -57,7 +59,8 @@ class ChineseWordProcessor:
             return {
                 "hanzi": word,
                 "example_sentences": example_sentences,
-                "improved_meaning": improved_meaning
+                "improved_meaning": improved_meaning,
+                "pinyin": 'f'
             }
 
         # Generate example sentences
@@ -70,12 +73,12 @@ class ChineseWordProcessor:
 
         # Save to DB
         result = {
-            "hanzi": word,
+            "word": word,
             "example_sentences": example_sentences,
             "improved_meaning": improved_meaning
         }
 
-        self.mongo_client.insert_record(result, ['example_sentences', 'improved_meaning'])
+        self.mongo_client.insert_record(record=result, columns=['example_sentences', 'improved_meaning'], collection_name=self.collection_name, field_name=self.field_name)
         logger.info(f"Word {word} processed successfully.")
         return result
 
@@ -84,20 +87,12 @@ class ChineseWordProcessor:
         Generates example sentences for the word using Groq API.
         """
         prompt = (
-            )
-        return self.api_client.send_prompt(prompt)
-
-    def _generate_example_sentences(self, word: str) -> str:
-        """
-        Generates example sentences for the word using Groq API.
-        """
-        prompt = (
-            f"Generate 3 example sentences using the Chinese word '{word}' in simplified Chinese."
-            " Each sentence should be in simplified Chinese characters only."
-            " Without explaining, without title, only the output. Format as follows:\n"
-            "1: [sentence].\n"
-            "2: [sentence].\n"
-            "3: [sentence].\n"
+            f"使用简体中文字符生成 3 个示例句子，其中包含中文词 '{word}'。"
+            "每个句子应仅使用简体中文字符。"
+            "不解释，不包含标题，只输出句子。格式如下：\n"
+            "1: [句子]。\n"
+            "2: [句子]。\n"
+            "3: [句子]。\n"
         )
         return self.api_client.send_prompt(prompt)
 
@@ -105,21 +100,14 @@ class ChineseWordProcessor:
         """
         Generates or improves the meaning of the word in both English and Spanish.
         """
-        if previous_meaning:
-            prompt = (
-                f"Improve the following meaning of the Chinese word '{word}' in both English and Spanish. "
-                 "The explanation should be concise and clear, giving only the necessary information without additional context. "
-                f"Current meaning:\n{previous_meaning}"
-                 "Without explaining, without title, only the output. Format as follows:\n"
-                 "english: [meaning]\nspanish: [meaning]\n"
-            )
-        else:
-            prompt = (
-                f"Provide the essential meaning of the Chinese word '{word}' in both English and Spanish. "
-                 "The explanation should be concise and clear, giving only the necessary information without additional context. "
-                 "Without explaining, without title, only the output. Format as follows:\n"
-                 "english: [meaning].\n"
-                 "spanish: [meaning].\n"
+        prompt = (
+            f"为每个分类提供中文词 '{word}' 的基本含义，用英语和西班牙语描述。"
+             "如果没有在一个分类中使用，则什么也不写。"
+             "如果没有分类，只写翻译式句子的解释"
+             "解释应简明清晰，仅提供必要信息而不包含额外背景。"
+             "不解释，不包含标题，只输出结果。格式如下：\n"
+             "english: [含义]。\n"
+             "spanish: [含义]。\n"
             )
         return self.api_client.send_prompt(prompt)
 
@@ -150,12 +138,24 @@ class ChineseWordProcessor:
                 if part.startswith(f"{i}:"):
                     df.at[idx, f'sentence_{i}'] = part[len(f"{i}:"):].strip()
 
+            logger.info(row['example_sentences'])
+            logger.info(row['improved_meaning'])
+
             meanings = row['improved_meaning'].split('\n')
             for part in meanings:
                 if part.startswith("english: "):
                     df.at[idx, 'meaning_english'] = part[len("english: "):].strip()
+                    #logger.info(f'{word} english: {df['meaning_ennnglish']}')
                 elif part.startswith("spanish: "):
                     df.at[idx, 'meaning_spanish'] = part[len("spanish: "):].strip()
+
+            if(os.getenv('DEBUG')):
+                logger.info(f'{row['hanzi']}')
+                logger.info(f'{row['meaning_english']}')
+                logger.info(f'{row['meaning_spanish']}')
+                logger.info(f'{row['sentence_1']}')
+                logger.info(f'{row['sentence_2']}')
+                logger.info(f'{row['sentence_3']}')
 
         # Handle missing values in 'sentence_1', 'sentence_2', 'sentence_3'
         self._handle_missing_values(df)
@@ -170,8 +170,8 @@ class ChineseWordProcessor:
                pd.isna(row['sentence_2']) or not row['sentence_2'].strip() or \
                pd.isna(row['sentence_3']) or not row['sentence_3'].strip():
                 logger.warning(f"Missing example sentences for word {row['hanzi']} at index {idx}")
-                self.mongo_client.update_field(row['hanzi'], "example_sentences", "")
+                self.mongo_client.update_field(record=row,value='',collection_name=self.collection_name,field_name=self.field_name)
             if pd.isna(row['meaning_english']) or not row['meaning_english'].strip() or \
                pd.isna(row['meaning_spanish']) or not row['meaning_spanish'].strip():
                 logger.warning(f"Missing meaning for word {row['hanzi']} at index {idx}")
-                self.mongo_client.update_field(row['hanzi'], "improved_meaning", "")
+                self.mongo_client.update_field(record=row,value='',collection_name=self.collection_name,field_name=self.field_name)
