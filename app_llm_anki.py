@@ -46,7 +46,7 @@ def create_deck(config, stu, key='', df_name='final_with_ai.csv'):
                 stu.st.session_state['deck_created'] = False
             if not stu.st.session_state['deck_created']:
                 df = DataUtils.read_csv(df_name)
-                dt = DataTransformer(audio=True)
+                dt = DataTransformer(audio_enabled=True)
                 df['audio'] = dt.transform_data(df['word'])['audio']
                 generator = DeckGenerator(df, config)
                 filepath = generator.generate_decks()
@@ -58,7 +58,7 @@ def create_deck(config, stu, key='', df_name='final_with_ai.csv'):
 
 def main():
     stu = stUtils()
-    dt = DataTransformer(pinyin_enabled=True, translation_enabled=True, audio_creator=True, timestamp_enabled=True, save_enabled=True)
+    dt = DataTransformer(pinyin_enabled=True, translation_enabled=True, audio_enabled=True, timestamp_enabled=True, save_enabled=True)
     cwp = ChineseWordProcessor()
 
     df1 = stu.choose_dataframes()
@@ -86,7 +86,6 @@ def main():
     stu.add_separator()
 
     config = stu.choose_configuration_for_anki()
-    print(config['basics']['filename'])
     create_deck(config, stu)
 
 main()
