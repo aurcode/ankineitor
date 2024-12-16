@@ -60,7 +60,7 @@ class ChineseWordProcessor:
                 "word": word,
                 "example_sentences": example_sentences,
                 "improved_meaning": improved_meaning,
-                "pinyin": 'f'
+                #"pinyin": 'f'
             }
 
         # Generate example sentences

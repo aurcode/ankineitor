@@ -35,7 +35,7 @@ CHINESE = {
                 "afmt": read_file('./templates/chinese/back.html'),}],
          'css': read_file('./templates/chinese/style.css'),
     },
-    'model_builder': ['hanzi','pinyin','translation','part','audio']
+    'model_builder': ['word','pinyin','translation','part','audio']
 }
 
 RECOGNITION = {
@@ -68,7 +68,7 @@ RECOGNITION = {
             ],
          'css': read_file('./templates/chinese/style.css'),
     },
-    'model_builder': ['hanzi','pinyin',
+    'model_builder': ['word','pinyin',
                       'meaning_english','meaning_spanish',
                       'meaning_extra',
                       'sentence_1','sentence_2','sentence_3',
