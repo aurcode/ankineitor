@@ -48,8 +48,8 @@ def create_deck(config, stu, key='', df_name='final_with_ai.csv'):
                 df = DataUtils.read_csv(df_name)
                 dt = DataTransformer(audio_enabled=True)
                 df['audio'] = dt.transform_data(df['word'])['audio']
-                generator = DeckGenerator(df, config)
-                filepath = generator.generate_decks()
+                stu.print_DF(df, 'testing')
+                filepath = DeckGenerator(df, config).generate_deck().get_filepath()
                 stu.st.write(f'Deck successfully created in {filepath}')
                 stu.st.session_state['deck_created'] = True
                 return filepath
@@ -58,7 +58,7 @@ def create_deck(config, stu, key='', df_name='final_with_ai.csv'):
 
 def main():
     stu = stUtils()
-    dt = DataTransformer(pinyin_enabled=True, translation_enabled=True, audio_enabled=True, timestamp_enabled=True, save_enabled=True)
+    dt = DataTransformer(pinyin_enabled=True, translation_enabled=True, timestamp_enabled=True, save_enabled=True)
     cwp = ChineseWordProcessor()
 
     df1 = stu.choose_dataframes()

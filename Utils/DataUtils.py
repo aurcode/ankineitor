@@ -59,6 +59,7 @@ class DataFrameUtils:
     def save_dataframe(df: pd.DataFrame, topic: str, path: str = os.getenv('DATAFRAME_SAVE_PATH')):
         """Save the DataFrame to a CSV file."""
         try:
+            path = '/opt/audio/' if os.getenv('DOCKER') else os.getenv('AUDIO_PATH') if path else path
             now = datetime.datetime.now()
             filename = f"{path}{topic}-{now.year}-{now.month}-{now.day}.csv"
             df.head(1).to_csv(filename, index=False)

@@ -25,7 +25,7 @@ class AudioCreator:
             folder_name (str): Path to the folder where audio files will be saved. Defaults to `AUDIO_PATH` environment variable.
             language (str): Language for text-to-speech. Defaults to 'zh' (Chinese).
         """
-        self.folder_name: str = '/opt/audio/' if os.getenv('DOCKER') else os.getenv('AUDIO_PATH') if folder_name else folder_name
+        self.folder_name: str = '/opt/audio/' if os.getenv('DOCKER') else os.getenv('DATAFRAME_SAVE_PATH') if folder_name else folder_name
         self.language: str = language
         self.paths: List[str] = []
 
