@@ -7,7 +7,8 @@ services:
     volumes:
       - ${AUDIO_PATH}:/opt/audio
       - ${ANKIFILE}:/opt/output
-      - ${DATAFRAME_SAVE_PATH}:/opt/DATAFRAME_SAVE_PATH
+      - ${INPUT_PATH}:/opt/input
+      - ${DATAFRAME_SAVE_PATH}:/opt/df
 #    depends_on:
 #      - mongodb
     env_file:

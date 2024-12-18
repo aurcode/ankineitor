@@ -39,12 +39,12 @@ class DeckGenerator:
                     if media_col in entry and isinstance(entry[media_col], str):
                         filename = entry[media_col]
                         self.media_list.append(filename)
-
+                        logger.info(filename)
                         # Update media references for Anki compatibility
                         if '.mp3' in filename:
                             self.anki_cards[key][media_col] = f'[sound:{filename.split("/")[-1]}]'
                         elif '.png' in filename or '.jpg' in filename:
-                            self.anki_cards[key][media_col] = filename.split("\\")[-1]
+                            self.anki_cards[key][media_col] = filename.split("/")[-1]
                     else:
                         logger.debug(f"Skipping invalid media for key {key}, column {media_col}.")
                 except Exception as e:
@@ -79,7 +79,7 @@ class DeckGenerator:
 
         # Append additional metadata tags and fields
         tags.extend(['@AURCODE', self.config['basics']['note_type']])
-        fields.extend(['@AURCODE', self.config['basics']['note_type']])
+        #fields.extend(['@AURCODE', self.config['basics']['note_type']])
 
         return genanki.Note(
             model=model,
@@ -112,6 +112,7 @@ class DeckGenerator:
         try:
             package = genanki.Package(self.deck)
             package.media_files = self.media_list
+            logger.info(self.media_list)
             filepath = '/opt/output/' + self.config['basics']['filename'] if os.getenv('DOCKER') else self.config['basics']['filename']
             package.write_to_file(filepath)
             logger.info(f"Deck written to {filepath}.")
