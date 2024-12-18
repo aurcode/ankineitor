@@ -1,3 +1,5 @@
+# Broken for now, if u wanna use, back commit 794766e
+
 from Processing import TextExtractor,DataTransformer
 from Utils import DataUtils,stUtils
 from Ankineitor import DeckGenerator
