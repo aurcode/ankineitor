@@ -1,32 +1,38 @@
 services:
-  python:
+  api:
     build:
-      context: .
+      context: ./app
     ports:
-      - "5000:5000"
+      - "8000:8000"
     volumes:
-      - ${AUDIO_PATH}:/opt/AUDIO_PATH
-      - ${ANKIFILE}:/opt/ANKIFILE
+      - ${AUDIO_PATH}:/opt/audio
+      - ${ANKIFILE}:/opt/output
       - ${DATAFRAME_SAVE_PATH}:/opt/DATAFRAME_SAVE_PATH
-      - .:/src
-
-    entrypoint: /bin/bash # python #tester.py
-    depends_on:
-      - mongodb
+#    depends_on:
+#      - mongodb
     env_file:
       - .env
-    stdin_open: true  # Enable interactive mode
-    tty: true
 
-  mongodb:
-    image: mongo:latest
-    container_name: mongodb
+  streamlit:
+    build:
+      context: ./streamlit
     ports:
-      - "27017:27017"  # Map MongoDB port to the host
-    volumes:
-      - ${MONGO_DATA_PATH}:/data/db  # Persist data between container restarts
+      - "8501:8501"
+    depends_on:
+      - api
+#      - mongodb
     env_file:
-      - .env  # Load environment variables from the .env file
-
-volumes:
-  mongodb_data:
+      - .env
+#
+#  mongodb:
+#    image: mongo:latest
+#    container_name: mongodb
+#    ports:
+#      - "27017:27017"  # Map MongoDB port to the host
+#    volumes:
+#      - ${MONGO_DATA_PATH}:/data/db  # Persist data between container restarts
+#    env_file:
+#      - .env  # Load environment variables from the .env file
+#
+#volumes:
+#  mongodb_data:

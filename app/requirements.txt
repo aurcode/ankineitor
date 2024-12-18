@@ -5,12 +5,13 @@ deep-translator
 pinyin
 genanki
 gTTs
-python-dotenv
 pandas
 groq
 pymongo
 PyPDF2
 python-pptx
 tabulate
-streamlit
 loguru
+fastapi
+uvicorn[standard]
+flask
