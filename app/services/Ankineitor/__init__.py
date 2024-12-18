@@ -1,2 +1,2 @@
-from Ankineitor.ankineitor import DeckGenerator
-from Ankineitor.preconfigurations import CHINESE, PHOTO_PHOTO_BASIC, RECOGNITION, RECOGNITION_REZERO
+from services.Ankineitor.ankineitor import DeckGenerator
+#from services.Ankineitor.preconfigurations import CHINESE, PHOTO_PHOTO_BASIC, RECOGNITION, RECOGNITION_REZERO
