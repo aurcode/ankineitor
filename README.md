@@ -10,9 +10,12 @@ Next format
 {
   "dataframe": [
     {
-      "Title": "Hiiii",
-      "Descp": "Hellou!",
-      "type": "test"
+      "Title": "What is photosynthesis?",
+      "Desc": "Is the process by which plants, algae, and some bacteria convert light energy into chemical energy stored in glucose. It involves the absorption of light by chlorophyll, the utilization of carbon dioxide, and the production of oxygen as a byproduct."
+    },
+    {
+      "Title": "What is Mitosis",
+      "Desc": "Is a type of cell division in which a single cell divides to produce two identical daughter cells. This process is crucial for growth, development, and repair in multicellular organisms."
     }
   ],
   "config": {
@@ -25,7 +28,7 @@ Next format
     },
     "model_fields": [
       {"name": "Title"},
-      {"name": "Desc"},
+      {"name": "Desc"}
     ],
     "model_templates": {
       "main": [
@@ -37,7 +40,7 @@ Next format
         {
           "name": "Reverse Card",
           "qfmt": "{{Desc}}",
-          "afmt": "{{Title}}"
+          "afmt": "{{FrontSide}}<br/>{{Desc}}"
         }
       ],
       "css": ".card { font-family: Arial; font-size: 20px; }"
