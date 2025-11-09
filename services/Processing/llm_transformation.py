@@ -1,8 +1,9 @@
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from dotenv import load_dotenv
 from loguru import logger
 import pandas as pd
+from tqdm import tqdm
 
 from tenacity import (
     retry,
@@ -18,7 +19,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
-# Import the new SQLAlchemy client
+# Import the base class for inheritance
+from transformations import Transformation
+
+# Import the client, but we will type hint it generically
 from db_client import SQLAlchemyClient
 
 # Load environment variables
@@ -42,30 +46,47 @@ class WordMeaning(BaseModel):
     spanish: str = Field(description="The meaning of the word in Spanish.")
 
 
-# --- Refactored ChineseWordProcessor ---
+# --- Refactored LLMTransformation ---
 
 
-class LLMTransformation:
+class LLMTransformation(Transformation):
     """
     Processes Chinese words to find meanings and example sentences using
-    LangChain and Groq, caching results in a SQLite database via SQLAlchemy.
+    LangChain and Groq, caching results in a separate database.
+    This class now implements the Transformation interface.
     """
 
     def __init__(
         self,
-        db_client: SQLAlchemyClient = SQLAlchemyClient(),  # Use SQLAlchemyClient
+        db_client: SQLAlchemyClient,  # Database client is now injected
         api_key: Optional[str] = None,
         max_retries: int = 3,
+        table_name: str = "llm_inference",
     ):
-        self.db_client = db_client  # Use the generic 'db_client'
-        self.table_name = "llm_inference"  # Use 'table_name' for SQL
-        self.field_name = "word"  # Key to find records
+        """
+        Initializes the LLM Transformation.
+
+        Args:
+            db_client: A database client instance (e.g., SQLAlchemyClient)
+                       for caching LLM results.
+            api_key (Optional[str]): Groq API key. Defaults to env var.
+            max_retries (int): Max retries for API calls.
+            table_name (str): The specific table to use for LLM caching.
+        """
+        self.db_client = db_client
+        self.table_name = table_name
+        self.field_name = "word"
         self.max_retries = max_retries
+        self.api_key = api_key or os.getenv("GROQ_API_KEY")
+
+        if not self.api_key:
+            logger.warning("GROQ_API_KEY not found in environment. Hardcoding key.")
+            self.api_key = "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"
 
         # 1. Initialize Groq Chat Model
         self.llm = ChatGroq(
-            api_key="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",
-            model="llama-3.3-70b-versatile",
+            api_key=self.api_key,
+            model="llama-3.3-70b-versatile",  # Updated model
         )
 
         # 2. Setup Chain for Example Sentences
@@ -110,18 +131,27 @@ class LLMTransformation:
 
         self.meaning_chain = self.meaning_prompt | self.llm | self.meaning_parser
 
+    @property
+    def column_name(self) -> str:
+        """
+        Returns a representative column name for this transformation.
+        Note: This transformation adds *multiple* columns.
+        """
+        return "meaning_english"
+
+    # We keep process_word as the core worker method
     def process_word(self, word: str) -> Optional[Dict[str, str]]:
         """
         Generates and saves structured data for a single Chinese word.
         Checks cache first, then calls API chains if data is missing.
+        This is the internal logic for this transformation.
 
         Returns a dictionary with all fields, or None if processing fails.
         """
-        logger.info(f"Processing word: {word}")
+        logger.debug(f"LLMProcessing word: {word}")
 
         # 1. Check cache for *parsed* data
         try:
-            # This method call is compatible with SQLAlchemyClient
             existing_record = self.db_client.find_record(
                 key=word,
                 table_name=self.table_name,
@@ -133,8 +163,9 @@ class LLMTransformation:
                 and existing_record.get("sentence_1")
                 and existing_record.get("meaning_english")
             ):
-
-                logger.info(f"Skipping word '{word}': Found complete data in cache.")
+                logger.debug(
+                    f"Skipping LLM for '{word}': Found complete data in cache."
+                )
                 return {
                     "word": word,
                     "sentence_1": existing_record.get("sentence_1"),
@@ -144,14 +175,29 @@ class LLMTransformation:
                     "meaning_spanish": existing_record.get("meaning_spanish"),
                 }
         except Exception as e:
-            logger.error(f"Error checking cache for word '{word}': {e}")
+            logger.error(f"Error checking LLM cache for word '{word}': {e}")
 
-        logger.info(f"No cache found for '{word}', generating new data...")
+        logger.debug(f"No LLM cache for '{word}', generating new data...")
 
         try:
             # 2. Generate new data using LangChain chains
-            sentences_obj = self.sentence_chain.invoke({"word": word})
-            meaning_obj = self.meaning_chain.invoke({"word": word})
+            # We use tenacity for retries on the API calls
+            @retry(
+                stop=stop_after_attempt(self.max_retries),
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+            )
+            def get_sentences():
+                return self.sentence_chain.invoke({"word": word})
+
+            @retry(
+                stop=stop_after_attempt(self.max_retries),
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+            )
+            def get_meaning():
+                return self.meaning_chain.invoke({"word": word})
+
+            sentences_obj = get_sentences()
+            meaning_obj = get_meaning()
 
             # 3. Combine results into a single dictionary
             result = {
@@ -162,110 +208,84 @@ class LLMTransformation:
             }
 
             # 4. Save the *parsed* data to SQLite via SQLAlchemy
-            # This method call is compatible with SQLAlchemyClient
             self.db_client.insert_record(
                 record=result,
-                columns=list(result.keys())[1:],  # `columns` is used by the client
+                columns=list(result.keys())[1:],
                 table_name=self.table_name,
                 field_name=self.field_name,
             )
 
-            logger.info(f"Word '{word}' processed and saved successfully.")
+            logger.debug(f"LLM data for '{word}' processed and saved.")
             return result
 
         except Exception as e:
-            logger.error(f"Failed to process word '{word}' after retries: {e}")
+            logger.error(f"Failed to process word '{word}' with LLM after retries: {e}")
             return None
 
-    def process_words(self, words: List[str]) -> pd.DataFrame:
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Process a list of Chinese words and return the results in a DataFrame.
+        Applies the LLM transformation to a DataFrame.
+        This method fulfills the Transformation interface.
         """
+        logger.info("Applying LLM transformation...")
+        if "word" not in df.columns:
+            logger.error("LLMTransformation: DataFrame must have a 'word' column.")
+            return df
+
         results = []
-        for word in words:
+        # Use tqdm for progress, as this is the slowest step
+        for word in tqdm(df["word"], desc="LLM Processing"):
             if not word or not word.strip():
                 logger.warning("Skipping empty word.")
+                results.append(None)
                 continue
 
+            # Call the internal worker method which handles
+            # its own caching in the `llm_inference` table.
             result = self.process_word(word)
-            if result:
-                results.append(result)
+            results.append(result)
 
-        if not results:
-            logger.warning("No words were processed successfully.")
-            return pd.DataFrame()
+        # Create a new DataFrame from the results
+        # Filter out None results before creating DataFrame
+        valid_results = [r for r in results if r is not None]
+        if not valid_results:
+            logger.warning("LLMTransformation: No words were processed successfully.")
+            return df  # Return original df
 
-        df = pd.DataFrame(results)
+        df_results = pd.DataFrame(valid_results)
 
-        # Reorder columns
-        expected_columns = [
-            "word",
-            "meaning_english",
-            "meaning_spanish",
+        # Define all columns this transformation creates
+        llm_columns = [
             "sentence_1",
             "sentence_2",
             "sentence_3",
+            "meaning_english",
+            "meaning_spanish",
         ]
-        # Filter for columns that actually exist in the DataFrame
-        final_columns = [col for col in expected_columns if col in df.columns]
 
-        return df[final_columns]
+        # Select only the llm_columns that were actually generated
+        # and the 'word' key
+        generated_cols = [col for col in llm_columns if col in df_results.columns]
+        if not generated_cols:
+            logger.warning("LLMTransformation: No LLM columns in results.")
+            return df
 
-    def close_db(self):
-        """Closes the database connection."""
-        logger.info("Closing database connection.")
-        # This method call is compatible with SQLAlchemyClient
-        self.db_client.close()
+        final_llm_cols = ["word"] + generated_cols
 
-
-if __name__ == "__main__":
-    # Setup logging
-    logger.add("logs/processing.log", rotation="10 MB")
-
-    # Set DEBUG mode if needed
-    os.environ["DEBUG"] = "true"
-
-    db_client = None  # Define client outside try block
-    try:
-        # Initialize clients
-        # This will create 'ankineitor.db' if it doesn't exist
-        # and use the SQLAlchemyClient
-        db_client = SQLAlchemyClient(db_path="ankineitor.db")
-
-        word_processor = LLMTransformation(
-            db_client=db_client,
-            api_key="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",
+        # Merge results back into the original DataFrame
+        # Use 'how="left"' to preserve all original rows and 'word' as the key
+        # Use suffixes to identify any potential column clashes (though unlikely)
+        df = pd.merge(
+            df,
+            df_results[final_llm_cols],
+            on="word",
+            how="left",
+            suffixes=("", "_llm"),
         )
 
-        # List of words to process
-        words_to_process = [
-            "你好",
-            "谢谢",
-            "数据",
-            "工程师",
-            "你好",
-        ]  # Duplicate to test caching
+        # Drop duplicate 'word' entries that merge might create if there are
+        # upstream duplicates, keeping the first processed instance.
+        df = df.drop_duplicates(subset=["word"]).reset_index(drop=True)
 
-        logger.info("Starting word processing job...")
-
-        # Process the words
-        df = word_processor.process_words(words_to_process)
-
-        if not df.empty:
-            logger.info("Successfully processed words. DataFrame head:")
-            print(df.head())
-
-            # Save to CSV
-            df.to_csv("chinese_words_processed.csv", index=False)
-            logger.info("Results saved to 'chinese_words_processed.csv'")
-        else:
-            logger.warning("Job finished, but no data was returned.")
-
-    except Exception as e:
-        logger.critical(f"An unhandled error occurred: {e}")
-
-    finally:
-        # Ensure the database connection is always closed
-        if db_client:
-            # This call is compatible with SQLAlchemyClient
-            db_client.close()
+        logger.info("LLM transformation applied successfully.")
+        return df
