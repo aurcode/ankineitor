@@ -16,7 +16,7 @@ class AudioCreator:
     """
 
     def __init__(self, folder_name: Optional[str] = None, language: str = "zh"):
-        """ddd
+        """
         Args:
             folder_name: Path to save audio. Defaults to AUDIO_PATH env or './audio'.
             language: Language for gTTS. Defaults to 'zh'.
