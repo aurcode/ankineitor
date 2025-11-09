@@ -1,0 +1,73 @@
+# ==============================================================================
+# Anki Deck Generator Configuration
+# ==============================================================================
+
+# --- Basic deck and model information ---
+basics:
+  model_id: 1607392319
+  model_name: "AURCODE Refactored Model"
+  deck_id: 1234567890
+  note_type: "Vocabulary" # Used in static tags
+
+# --- Model Fields: The fields that exist in the Anki note type ---
+# The order here must match your Anki model exactly.
+model_fields:
+  - name: "Front"
+  - name: "Back"
+  - name: "Example"
+  - name: "Audio"
+  - name: "Image"
+  - name: "Notes"
+
+# --- Model Templates and CSS Styling ---
+model_templates:
+  # 'main' is a card template. You can have multiple (e.g., 'main', 'reversed').
+  main:
+    - name: "Card 1"
+      qfmt: "{{Front}}<br>{{Image}}"
+      afmt: "{{FrontSide}}<hr id=answer>{{Back}}<br><br>{{Example}}{{Audio}}<br><br><i>{{Notes}}</i>"
+  # CSS styling is shared across all card templates for this model.
+  css: |
+    .card {
+      font-family: arial;
+      font-size: 20px;
+      text-align: center;
+      color: black;
+      background-color: white;
+    }
+
+# --- Model Builder: Maps DataFrame columns to Anki model fields ---
+# Specifies which column from your CSV/DataFrame maps to which field in the Anki model.
+# The order must match the 'model_fields' list above.
+model_builder:
+  - "Word"        # Maps to "Front"
+  - "Definition"  # Maps to "Back"
+  - "Sentence"    # Maps to "Example"
+  - "Sound"       # Maps to "Audio"
+  - "Picture"     # Maps to "Image"
+  - "ExtraInfo"   # Maps to "Notes"
+
+# --- Media Field Identification (NEW) ---
+# Explicitly defines which columns contain media files.
+media_fields:
+  - column_name: "Sound"
+    media_type: "audio" # Must be 'audio', 'image', or 'video'
+  - column_name: "Picture"
+    media_type: "image"
+
+# --- Tag Generation Rules (NEW) ---
+# Defines how tags should be created from DataFrame columns.
+tag_rules:
+  # Rule 1: Create static tags that are added to every card.
+  - static_tags:
+      - "@AURCODE"
+      - "RefactoredDeck"
+
+  # Rule 2: Create tags from the 'Category' column, splitting by comma.
+  - prefix: "Course"
+    column: "Category"
+    split_by: ","
+
+  # Rule 3: Create a tag from the 'Lesson' column.
+  - prefix: "Lesson"
+    column: "Lesson"

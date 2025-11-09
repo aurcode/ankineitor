@@ -1,0 +1,5 @@
+genanki
+loguru
+pandas
+PyYAML
+pydantic
