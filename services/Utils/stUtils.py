@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from Ankineitor import CHINESE, RECOGNITION, PHOTO_PHOTO_BASIC, RECOGNITION_REZERO
+from Ankineitor.__main__ import CHINESE, RECOGNITION, PHOTO_PHOTO_BASIC, RECOGNITION_REZERO
 from Utils import DataUtils
 
 class stUtils:

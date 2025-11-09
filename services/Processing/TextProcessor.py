@@ -11,13 +11,15 @@ import os
 import re
 import pinyin
 import pinyin.cedict
-#from opencc import OpenCC
 
-from Utils import MongoDBClient
+# from opencc import OpenCC
+
+# from Utils import MongoDBClient
 load_dotenv()
 
+
 class AudioCreator:
-    def __init__(self, folder_name: str = None, language: str = 'zh'):
+    def __init__(self, folder_name: str = None, language: str = "zh"):
         """
         AudioCreator class to generate audio files from text.
 
@@ -25,7 +27,11 @@ class AudioCreator:
             folder_name (str): Path to the folder where audio files will be saved. Defaults to `AUDIO_PATH` environment variable.
             language (str): Language for text-to-speech. Defaults to 'zh' (Chinese).
         """
-        self.folder_name: str = '/opt/audio/' if os.getenv('DOCKER') else os.getenv('DATAFRAME_SAVE_PATH') if folder_name else folder_name
+        self.folder_name: str = (
+            "/opt/audio/"
+            if os.getenv("DOCKER")
+            else os.getenv("DATAFRAME_SAVE_PATH") if folder_name else folder_name
+        )
         self.language: str = language
         self.paths: List[str] = []
 
@@ -39,7 +45,7 @@ class AudioCreator:
         Returns:
             str: Sanitized text.
         """
-        return ''.join(re.findall(r'[\u4e00-\u9fffa-zA-Z0-9]+', text))[:30]
+        return "".join(re.findall(r"[\u4e00-\u9fffa-zA-Z0-9]+", text))[:30]
 
     def _create_audio(self, text: str, file_path: str) -> str:
         """
@@ -55,7 +61,7 @@ class AudioCreator:
         if not text:
             return None
 
-        if not re.search(r'[\u4e00-\u9fffa-zA-Z0-9]', text):
+        if not re.search(r"[\u4e00-\u9fffa-zA-Z0-9]", text):
             return None
 
         audio_file = f"{file_path}-{self.language}.mp3"
@@ -94,21 +100,22 @@ class AudioCreator:
         logger.info(f"Audio file creation complete. {len(self.paths)} files generated.")
         return self.paths
 
+
 class DataTransformer:
     def __init__(
-            self,
-            traditional_enabled: bool = False,
-            pinyin_enabled: bool = False,
-            translation_enabled: bool = False,
-            audio_enabled: bool = False,
-            timestamp_enabled: bool = False,
-            save_enabled: bool = True,
-            dev_enabled: bool = os.getenv('DEBUG'),
-            lan_in: str = 'zh-CN',
-            lan_out: str = 'es',
-            mongo_client: MongoDBClient = MongoDBClient(),
-            audio_creator: AudioCreator = AudioCreator()
-        ):
+        self,
+        traditional_enabled: bool = False,
+        pinyin_enabled: bool = False,
+        translation_enabled: bool = False,
+        audio_enabled: bool = False,
+        timestamp_enabled: bool = False,
+        save_enabled: bool = True,
+        dev_enabled: bool = os.getenv("DEBUG"),
+        lan_in: str = "zh-CN",
+        lan_out: str = "es",
+        mongo_client: MongoDBClient = MongoDBClient(),
+        audio_creator: AudioCreator = AudioCreator(),
+    ):
         """
         DataTransformer class for processing Chinese words.
 
@@ -138,23 +145,24 @@ class DataTransformer:
         self.dev_enabled = dev_enabled
         self.max_records = 20 if self.dev_enabled else None
         self.mongo_client = mongo_client
-        self.collection_name = 'hanzi_processing'
-        self.field_name = 'word'
+        self.collection_name = "hanzi_processing"
+        self.field_name = "word"
         self.audio_creator = audio_creator
-
 
     def _determine_columns(self) -> List[str]:
         """
         Determine columns based on enabled options.
         """
-        base_columns = ['word']
+        base_columns = ["word"]
         optional_columns = [
-            column for column, enabled in {
-                'pinyin': self.pinyin_enabled,
-                'translation': self.translation_enabled,
-                'audio': self.audio_enabled,
-                'timestamp': self.timestamp_enabled
-            }.items() if enabled
+            column
+            for column, enabled in {
+                "pinyin": self.pinyin_enabled,
+                "translation": self.translation_enabled,
+                "audio": self.audio_enabled,
+                "timestamp": self.timestamp_enabled,
+            }.items()
+            if enabled
         ]
         return base_columns + optional_columns
 
@@ -163,7 +171,7 @@ class DataTransformer:
         Add timestamp to the DataFrame if enabled.
         """
         if self.timestamp_enabled:
-            df['timestamp'] = datetime.now().strftime("%d/%m/%Y")
+            df["timestamp"] = datetime.now().strftime("%d/%m/%Y")
         return df
 
     def _convert_to_traditional(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -171,17 +179,17 @@ class DataTransformer:
         Convert simplified Chinese characters to traditional.
         """
         if self.traditional_enabled:
-            self.columns.append('traditional')
-            df['traditional'] = df['word']
-            converter = OpenCC('t2s')
-            df['word'] = df['word'].apply(converter.convert)
+            self.columns.append("traditional")
+            df["traditional"] = df["word"]
+            converter = OpenCC("t2s")
+            df["word"] = df["word"].apply(converter.convert)
         return df
 
     def _generate_audio(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.audio_enabled and self.audio_creator:
             logger.info("Generating audio files for hanzi.")
-            self.audio_creator.create_audios(list(df['word']))
-            df['audio'] = self.audio_creator.paths
+            self.audio_creator.create_audios(list(df["word"]))
+            df["audio"] = self.audio_creator.paths
         return df
 
     def _translate_word(self, word: str) -> str:
@@ -201,17 +209,22 @@ class DataTransformer:
         """
         logger.info(f"Transforming row for hanzi: {row['word']}")
         if self.translation_enabled:
-            row['translation'] = self._translate_word(row['word'])
+            row["translation"] = self._translate_word(row["word"])
 
         if self.pinyin_enabled:
-            row['pinyin'] = pinyin.get(row['word'], delimiter=" ")
+            row["pinyin"] = pinyin.get(row["word"], delimiter=" ")
 
         if self.save_enabled and self.pinyin_enabled and self.translation_enabled:
-            self.mongo_client.insert_record(record=row.to_dict(), columns=['pinyin', 'translation', 'timestamp'], collection_name=self.collection_name, field_name=self.field_name)
+            self.mongo_client.insert_record(
+                record=row.to_dict(),
+                columns=["pinyin", "translation", "timestamp"],
+                collection_name=self.collection_name,
+                field_name=self.field_name,
+            )
 
-        logger.info(f'Create a new register for {row['word']}')
-        logger.info(f'translation: {row['translation']}')
-        logger.info(f'translation: {row['pinyin']}')
+        logger.info(f"Create a new register for {row['word']}")
+        logger.info(f"translation: {row['translation']}")
+        logger.info(f"translation: {row['pinyin']}")
         return row
 
     def transform_data(self, words: List[str]) -> pd.DataFrame:
@@ -219,16 +232,16 @@ class DataTransformer:
         Transform a list of Chinese words.
         """
         logger.info("Starting data transformation...")
-        df = pd.DataFrame({'word': words}).replace('', np.nan).dropna()
+        df = pd.DataFrame({"word": words}).replace("", np.nan).dropna()
 
         if self.pinyin_enabled:
-            df['pinyin'] = None
+            df["pinyin"] = None
         if self.translation_enabled:
-            df['translation'] = None
+            df["translation"] = None
         if self.timestamp_enabled:
-            df['timestamp'] = None
+            df["timestamp"] = None
         if self.audio_enabled:
-            df['audio'] = None
+            df["audio"] = None
 
         if self.dev_enabled:
             df = df.head(self.max_records)
@@ -236,14 +249,19 @@ class DataTransformer:
         df = self._add_timestamp(df)
         df = self._convert_to_traditional(df)
 
-
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
-            existing_record = self.mongo_client.find_record(key=row['word'], collection_name=self.collection_name, field_name=self.field_name)
+            existing_record = self.mongo_client.find_record(
+                key=row["word"],
+                collection_name=self.collection_name,
+                field_name=self.field_name,
+            )
             if existing_record:
-                for column in ['pinyin', 'translation']:
+                for column in ["pinyin", "translation"]:
                     row[column] = existing_record.get(column, row.get(column))
-                if row['pinyin'] and row['translation']:
-                    logger.info(f'{row["word"]} has already been processed previously. {row["pinyin"]} {row["translation"]}')
+                if row["pinyin"] and row["translation"]:
+                    logger.info(
+                        f'{row["word"]} has already been processed previously. {row["pinyin"]} {row["translation"]}'
+                    )
                     df.loc[index] = row
                     continue
 
@@ -251,18 +269,26 @@ class DataTransformer:
             df.loc[index] = row
 
         df = self._generate_audio(df)
-        self.mongo_client.delete_duplicates(collection_name=self.collection_name, field_name=self.field_name)
+        self.mongo_client.delete_duplicates(
+            collection_name=self.collection_name, field_name=self.field_name
+        )
 
         logger.info(f"Data transformation complete. DataFrame is {len(df)}")
         return df[self.columns]
 
-    def transform_categories(self, df: pd.DataFrame, category: Optional[str] = None) -> pd.DataFrame:
+    def transform_categories(
+        self, df: pd.DataFrame, category: Optional[str] = None
+    ) -> pd.DataFrame:
         """
         Transform and add categories to the DataFrame.
-    """
+        """
         for index, row in tqdm(df.iterrows(), total=df.shape[0]):
             if category:
-                self.mongo_client.add_category(row['word'], category, self.collection_name, self.field_name)
-            categories = self.mongo_client.get_categories_by_word(row['word'], self.collection_name)
-            df.loc[index, 'categories'] = ', '.join(categories)
+                self.mongo_client.add_category(
+                    row["word"], category, self.collection_name, self.field_name
+                )
+            categories = self.mongo_client.get_categories_by_word(
+                row["word"], self.collection_name
+            )
+            df.loc[index, "categories"] = ", ".join(categories)
         return df.reset_index(drop=True)

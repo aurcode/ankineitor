@@ -1,204 +1,231 @@
-from dotenv import load_dotenv
 import os
 import io
 import re
-import PyPDF2
-from typing import List, Union, Dict
-from pptx import Presentation
+import hashlib
+from typing import List, Union, Dict, Set
+from dotenv import load_dotenv
 import pandas as pd
 import jieba.posseg as pseg
 from loguru import logger
 
+# --- Unstructured Imports ---
+from unstructured.partition.auto import partition
+from unstructured.cleaners.core import (
+    clean,
+    clean_extra_whitespace,
+    clean_bullets,
+    clean_dashes,
+    replace_unicode_quotes,
+)
+from unstructured.documents.elements import Header, Footer, PageNumber, Element
+
 # Load environment variables
 load_dotenv()
 
-import hashlib
-
-'''class MongoHandler:
-    def __init__(self, collection_name: str = 'file_results'):
-        self.client = MongoDBClient()
-        self.collection_name = collection_name
-        self.field_name = "file_hash"
-
-    def get_result(self, file_name: str) -> Union[None, pd.DataFrame]:
-        """Retrieve the result from MongoDB if it already exists."""
-        file_hash = self._get_file_hash(file_name)
-        result = self.client.find_record(key=file_hash,
-                                         collection_name=self.collection_name,
-                                         field_name=self.field_name)
-        if result:
-            # Convert the stored result back to a DataFrame
-            return pd.read_json(result['data'])
-        return None
-
-    def save_result(self, file_name: str, df: pd.DataFrame):
-        """Save the processing results into MongoDB."""
-        file_hash = self._get_file_hash(file_name)
-        data = df.to_json()  # Save the DataFrame as JSON
-        record = {self.field_name: file_hash, "data": data}
-
-        try:
-            self.client.insert_record(
-                record=record,
-                columns=["file_name", "data"],
-                collection_name="results",
-                field_name="file_name"
-            )
-            logger.info(f"Record for '{file_hash}' saved in MongoDB.")
-        except Exception as e:
-            logger.error(f"Error saving record for '{file_hash}' in MongoDB: {e}")
-
-    def _get_file_hash(self, file_name: str) -> str:
-        """Generate a unique hash for the file."""
-        return hashlib.md5(file_name.encode()).hexdigest()
-'''
-
-class FileHandler:
-    """Handles extraction of text from different file formats."""
-
-    def __init__(self, file_content: bytes, test: bool = False):
-        self.file_content = file_content
-        self.test = test
-
-    def extract_text(self, file_name: str) -> List[str]:
-        """Dispatch to the correct method based on file extension."""
-        file_extension = file_name.lower().split('.')[-1]
-
-        if file_extension == 'pdf':
-            return self._extract_text_from_pdf()
-        elif file_extension == 'pptx':
-            return self._extract_text_from_pptx()
-        elif file_extension == 'txt':
-            return self._extract_text_from_txt()
-        else:
-            raise ValueError(f"Unsupported file type: {file_extension}")
-
-    def _extract_text_from_txt(self) -> List[str]:
-        """Extract text from a txt file."""
-        text = self.file_content.decode('utf-8')
-        return [text]
-
-    def _extract_text_from_pdf(self) -> List[str]:
-        """Extract text from a PDF file."""
-        pdf_file = io.BytesIO(self.file_content)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = []
-        num_pages = len(pdf_reader.pages)
-
-        # Optionally limit the pages for testing purposes
-        max_page = 3 if self.test else num_pages
-        for page_num in range(min(max_page, num_pages)):
-            page = pdf_reader.pages[page_num]
-            text.append(page.extract_text())
-
-        return text
-
-    def _extract_text_from_pptx(self) -> List[str]:
-        """Extract text from a PowerPoint file."""
-        pptx_file = io.BytesIO(self.file_content)
-        presentation = Presentation(pptx_file)
-        text = []
-
-        max_page = 3 if self.test else len(presentation.slides)
-        for slide in presentation.slides[:max_page]:
-            for shape in slide.shapes:
-                if shape.has_text_frame:
-                    for paragraph in shape.text_frame.paragraphs:
-                        for run in paragraph.runs:
-                            text.append(run.text)
-        return text
-
 
 class TextExtractor:
-    """Class responsible for text extraction and processing from uploaded files."""
+    """
+    Handles file parsing, text extraction, and Chinese word segmentation
+    using the 'unstructured' library and 'jieba'.
+    """
 
-    def __init__(self, uploaded_files: Dict[str, bytes], dev_enabled: bool = os.getenv('DEBUG')):
+    def __init__(self, uploaded_files: Dict[str, bytes], dev_enabled: bool = False):
+        """
+        Initializes the extractor with a dictionary of file names and their byte content.
+
+        Args:
+            uploaded_files: A dictionary mapping file_name (str) to file_content (bytes).
+            dev_enabled: If True, limits processing for testing (e.g., first 3 pages).
+        """
         self.dev_enabled = dev_enabled
         self.uploaded_files = uploaded_files
-        self.text: Union[str, List[str]] = []
-        self.phrases: List[str] = []
+        self.text: str = ""  # All cleaned text, joined together.
+        self.phrases: List[str] = []  # List of individual cleaned text chunks.
 
-    def extract_text(self):
-        """Extract text from all uploaded files."""
+        # Categories of elements to ignore during extraction
+        self.junk_categories: Set[Element] = {Header, Footer, PageNumber}
+
+        # Pre-compile regex for finding Chinese characters
+        self.chinese_regex = re.compile(r"[\u4E00-\u9FFF]+")
+
+    def _get_content_hash(self) -> str:
+        """
+        Generates a single SHA-256 hash for all uploaded file content.
+        This is a reliable key for caching.
+        """
+        hasher = hashlib.sha256()
+        # Sort by filename to ensure consistent hash order
+        for file_name in sorted(self.uploaded_files.keys()):
+            hasher.update(self.uploaded_files[file_name])
+        return hasher.hexdigest()
+
+    def _clean_element_text(self, text: str) -> str:
+        """
+        Applies a series of 'unstructured' cleaners to a single text chunk.
+        """
+        text = clean(text, bullets=False, dashes=False, extra_whitespace=False)
+        text = clean_extra_whitespace(text)
+        text = clean_bullets(text)
+        text = clean_dashes(text)
+        text = replace_unicode_quotes(text)
+        return text.strip()
+
+    def extract_content(self, min_phrase_len: int = 6):
+        """
+        Parses all uploaded files using 'unstructured', cleans the text,
+        and populates 'self.text' and 'self.phrases'.
+        """
+        logger.info(f"Extracting content from {len(self.uploaded_files)} file(s)...")
+
+        # Use a set to avoid duplicate phrases
+        cleaned_phrases: Set[str] = set()
+
+        # Set partition strategy for testing/dev mode
+        strategy = "hi_res" if self.dev_enabled else "auto"
+
         for file_name, file_content in self.uploaded_files.items():
-            file_handler = FileHandler(file_content, self.dev_enabled)
-            file_text = file_handler.extract_text(file_name)
-            self.text.extend(file_text)
-        self.text = '。'.join(self.text)
+            logger.debug(f"Partitioning file: {file_name} with strategy '{strategy}'")
+            try:
+                file_io = io.BytesIO(file_content)
 
-    def separated_chinese_characters(self, phrases=False) -> pd.DataFrame:
-        """Separate and return Chinese characters along with their frequency and part-of-speech."""
-        chinese_regex = r'[\u4E00-\u9FFF]+'
-        chinese_characters = '。'.join(re.findall(chinese_regex, self.text))
-        seg_list = list(pseg.cut(chinese_characters, use_paddle=True))
+                # Use 'partition' to handle any file type (PDF, PPTX, TXT, etc.)
+                elements = partition(
+                    file=file_io,
+                    file_filename=file_name,
+                    strategy=strategy,
+                    # For dev mode, 'hi_res' strategy respects max_pages
+                    max_pages=3 if self.dev_enabled else None,
+                )
 
-        # Create a DataFrame from the segmented list
-        df = pd.DataFrame(set(seg_list), columns=["word", "part"])
-        df = df[df['word'] != '。']
-        df = df.groupby('word')['part'].agg(lambda x: ', '.join(x)).reset_index()
+                for el in elements:
+                    # Skip junk elements
+                    if el.category in self.junk_categories:
+                        continue
 
-        df_aux = pd.DataFrame(seg_list, columns=["word", "part"])
-        df_aux['frequency'] = df_aux['word'].map(df_aux['word'].value_counts())
+                    cleaned_text = self._clean_element_text(el.text)
 
-        if phrases:
-            self.phrases = self.extract_phrases()
+                    # Add to phrases if it meets length and content requirements
+                    if (
+                        cleaned_text
+                        and len(cleaned_text) >= min_phrase_len
+                        and self.chinese_regex.search(cleaned_text)
+                    ):
 
-        # Merge frequency data and return cleaned DataFrame
-        return pd.merge(df, df_aux, on='word', how='left')[['word', 'part_x', 'frequency']] \
-            .drop_duplicates(subset='word') \
-            .rename(columns={'part_x': 'part'}) \
-            .sort_values(by='frequency', ascending=False) \
-            .reset_index(drop=True)
+                        cleaned_phrases.add(cleaned_text)
 
-    def extract_phrases(self, split_n: int = 12, min_characters_n: int = 6) -> List[str]:
-        """Extract meaningful phrases from text."""
-        text_new = self._format_text(self.text, split_n)
-        para = self._apply_text_formatting(text_new)
-        return [i for i in para if len(i) >= min_characters_n and re.search(r'[\u4e00-\u9fff]+', i)]
+            except Exception as e:
+                logger.error(f"Error partitioning file '{file_name}': {e}")
+                continue
 
-    def _apply_text_formatting(self, text: str) -> List[str]:
-        """Apply common text formatting (split by punctuation)."""
-        para = re.sub(r"([。！？\?])([^”'])", r"\1\n\2", text)
-        para = re.sub(r"(\.{6})([^”'])", r"\1\n\2", para)
-        para = re.sub(r"(\…{2})([^”'])", r"\1\n\2", para)
-        para = re.sub(r"([。！？\?][”'])([^，。！？\?])", r'\1\n\2', para)
-        para = para.rstrip()
-        para = list(set(para.split("\n")))
-        return para
+        self.phrases = sorted(list(cleaned_phrases), key=len, reverse=True)
+        self.text = "。".join(self.phrases)  # Join with a Chinese full stop
+        logger.info(f"Content extracted. Found {len(self.phrases)} unique phrases.")
 
-    def _format_text(self, text: str, split_n: int) -> str:
-        """Format text into smaller segments."""
-        lines = text.split('\n')
-        result = []
-        current_line = ''
+    def separated_chinese_characters(self) -> pd.DataFrame:
+        """
+        Segments the extracted Chinese text into words, parts of speech,
+        and frequencies using 'jieba'.
 
-        for line in lines:
-            if len(current_line) > split_n:
-                result.append(current_line + line)
-                current_line = ''
-            elif len(line) <= split_n:
-                result.append(line + '\n')
-            else:
-                current_line = line
+        Returns:
+            A pandas DataFrame with columns: ['word', 'part', 'frequency'],
+            sorted by frequency.
+        """
+        if not self.text:
+            logger.warning("No text extracted. Call extract_content() first.")
+            return pd.DataFrame(columns=["word", "part", "frequency"])
 
-        if current_line:
-            result.append(current_line)
-        return ''.join(result)[:2000]
+        logger.info("Segmenting Chinese text with 'jieba'...")
+        # Find all continuous blocks of Chinese text
+        chinese_text_blocks = self.chinese_regex.findall(self.text)
+        full_chinese_text = "。".join(chinese_text_blocks)
+
+        # Segment the text using 'jieba' with part-of-speech tagging
+        # use_paddle=True enables paddle mode for better accuracy
+        seg_list = list(pseg.cut(full_chinese_text, use_paddle=True))
+
+        # --- Refactored Pandas Logic ---
+
+        # 1. Create initial DataFrame
+        df = pd.DataFrame(seg_list, columns=["word", "part"])
+
+        # 2. Filter out punctuation and empty strings
+        df = df[~df["word"].isin(["。", "，", " "])]  # Add more punctuation if needed
+        df = df[df["word"].str.strip() != ""]
+
+        if df.empty:
+            logger.warning("No valid Chinese words found after segmentation.")
+            return pd.DataFrame(columns=["word", "part", "frequency"])
+
+        # 3. Group by word, aggregate parts (unique) and frequency (count)
+        # This is far more efficient than the original merge logic.
+        agg_df = (
+            df.groupby("word")
+            .agg(
+                # Get a sorted list of unique parts-of-speech
+                part=("part", lambda x: ", ".join(sorted(list(set(x))))),
+                # Get the count of the word
+                frequency=("word", "count"),
+            )
+            .reset_index()
+        )
+
+        # 4. Sort by frequency and return
+        return agg_df.sort_values(by="frequency", ascending=False).reset_index(
+            drop=True
+        )
 
     @staticmethod
     def read_files_to_uploaded(file_paths: List[str]) -> Dict[str, bytes]:
-        """Reads files from the given paths and returns a dictionary of file content."""
+        """
+        Utility static method to read files from local paths into the
+        dictionary format required by the constructor.
+        """
         uploaded_files = {}
         for file_path in file_paths:
-            with open(file_path, 'rb') as file:
-                uploaded_files[os.path.basename(file_path)] = file.read()
+            try:
+                with open(file_path, "rb") as file:
+                    uploaded_files[os.path.basename(file_path)] = file.read()
+            except FileNotFoundError:
+                logger.error(f"File not found: {file_path}")
+            except Exception as e:
+                logger.error(f"Error reading file '{file_path}': {e}")
         return uploaded_files
 
 
-#if __name__ == '__main__':
-    #uploaded_files = TextExtractor.read_files_to_uploaded(['./电路CLASSES.pdf'])
-    #extractor = TextExtractor(uploaded_files, dev_enabled=False)
-    #extractor.extract_text()
-    #df = extractor.separated_chinese_characters()
-    #logger.info(f"Extracted {len(df)} rows of data.")
-    #print(df.head())
+if __name__ == "__main__":
+    # Add a log sink for better output
+    logger.add("logs/file_processing.log", rotation="10 MB")
+
+    # 1. Use the static helper to read local files
+    # Replace with the path to your test PDF
+    file_paths = ["./试试.pdf"]
+    uploaded_files = TextExtractor.read_files_to_uploaded(file_paths)
+
+    if uploaded_files:
+        # 2. Initialize the extractor
+        # Set dev_enabled=True for a quick test (processes ~3 pages)
+        # Set dev_enabled=False for full processing
+        extractor = TextExtractor(uploaded_files, dev_enabled=True)
+
+        # 3. Run the extraction
+        # This populates extractor.text and extractor.phrases
+        extractor.extract_content()
+
+        # 4. Get the segmented words DataFrame
+        df = extractor.separated_chinese_characters()
+
+        if not df.empty:
+            logger.info(f"Successfully segmented {len(df)} unique words.")
+            print("--- Top 10 Most Frequent Words ---")
+            print(df.head(10))
+        else:
+            logger.warning("No words were segmented.")
+
+        # 5. You can also access the extracted phrases
+        phrases = extractor.phrases
+        if phrases:
+            logger.info(f"Found {len(phrases)} unique phrases/chunks.")
+            print("\n--- Longest Extracted Phrase ---")
+            print(phrases[0])  # They are sorted by length
+    else:
+        logger.error("No files were loaded. Check file paths.")

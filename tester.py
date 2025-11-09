@@ -1,6 +1,6 @@
 from Processing import TextExtractor,DataTransformer,ChineseWordProcessor
 from Utils import DataUtils,stUtils
-from Ankineitor import DeckGenerator
+from Ankineitor.__main__ import DeckGenerator
 from dotenv import load_dotenv
 import pandas as pd
 import os

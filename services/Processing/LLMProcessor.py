@@ -1,177 +1,268 @@
+import os
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
-from Utils import MongoDBClient
 from loguru import logger
-from groq import Groq
 import pandas as pd
-import os
 
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    RetryCallState,
+    RetryError,
+)
+
+# LangChain components
+from langchain_groq import ChatGroq
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
+from pydantic import BaseModel, Field
+
+# Import the new SQLite client
+from SQLiteClient import SQLiteClient
+
+# Load environment variables
 load_dotenv()
 
-class GroqAPIClient:
-    def __init__(self, api_key: Optional[str] = None):
-        """
-        API Client to communicate with Groq API for generating examples and meanings.
-        """
-        self.api_key = api_key or os.getenv('API_KEY')
-        self.client = Groq(api_key=self.api_key)
+# --- Pydantic Models for Structured Output ---
 
-    def send_prompt(self, prompt: str, model: str = "llama-3.1-70b-versatile") -> str:
-        """
-        Sends a prompt to the Groq API and returns the response.
-        """
-        try:
-            response = self.client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model=model
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            # Log error or handle as needed
-            print(f"Error sending prompt to Groq API: {e}")
-            return ""
 
-class ChineseWordProcessor:
+class ExampleSentences(BaseModel):
+    """Structured model for example sentences."""
+
+    sentence_1: str = Field(description="The first example sentence.")
+    sentence_2: str = Field(description="The second example sentence.")
+    sentence_3: str = Field(description="The third example sentence.")
+
+
+class WordMeaning(BaseModel):
+    """Structured model for word meanings."""
+
+    english: str = Field(description="The meaning of the word in English.")
+    spanish: str = Field(description="The meaning of the word in Spanish.")
+
+
+# --- Refactored ChineseWordProcessor ---
+
+
+class LLMProcessor:
+    """
+    Processes Chinese words to find meanings and example sentences using
+    LangChain and Groq, caching results in a SQLite database.
+    """
+
     def __init__(
-            self,
-            mongo_client: MongoDBClient = MongoDBClient(),
-            api_client: GroqAPIClient = GroqAPIClient(),
-            max_retries: int = 3,
-        ):
-        self.mongo_client = mongo_client
-        self.collection_name = 'llm_inference'
-        self.field_name = 'word' #'hanzi'
-        self.api_client = api_client
+        self,
+        db_client: SQLiteClient = SQLiteClient(),  # Use SQLiteClient
+        api_key: Optional[str] = None,
+        max_retries: int = 3,
+    ):
+        self.db_client = db_client  # Use the generic 'db_client'
+        self.table_name = "llm_inference"  # Use 'table_name' for SQL
+        self.field_name = "word"  # Key to find records
         self.max_retries = max_retries
 
-    def process_word(self, word: str, previous_meaning: Optional[str] = None) -> Dict[str, str]:
+        # 1. Initialize Groq Chat Model
+        self.llm = ChatGroq(
+            api_key=api_key or os.getenv("API_KEY"),
+            model="llama-3.3-70b-versatile",
+        )
+
+        # 2. Setup Chain for Example Sentences
+        self.sentence_parser = PydanticOutputParser(pydantic_object=ExampleSentences)
+        self.sentence_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a helpful assistant that provides structured data. "
+                    "Respond *only* with the JSON object requested, do not add "
+                    "any other text or explanations.",
+                ),
+                (
+                    "human",
+                    "使用简体中文字符生成 3 个示例句子，其中包含中文词 '{word}'。\n"
+                    "每个句子应仅使用简体中文字符。\n"
+                    "{format_instructions}",
+                ),
+            ]
+        ).partial(format_instructions=self.sentence_parser.get_format_instructions())
+
+        self.sentence_chain = self.sentence_prompt | self.llm | self.sentence_parser
+
+        # 3. Setup Chain for Word Meanings
+        self.meaning_parser = PydanticOutputParser(pydantic_object=WordMeaning)
+        self.meaning_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a helpful assistant that provides structured data. "
+                    "Respond *only* with the JSON object requested, do not add "
+                    "any other text or explanations.",
+                ),
+                (
+                    "human",
+                    "提供中文词 '{word}' 的基本含义，用英语和西班牙语描述。\n"
+                    "解释应简明清晰，仅提供必要信息而不包含额外背景。\n"
+                    "{format_instructions}",
+                ),
+            ]
+        ).partial(format_instructions=self.meaning_parser.get_format_instructions())
+
+        self.meaning_chain = self.meaning_prompt | self.llm | self.meaning_parser
+
+    def process_word(self, word: str) -> Optional[Dict[str, str]]:
         """
-        Generates example sentences and improved meaning for a given Chinese word.
+        Generates and saves structured data for a single Chinese word.
+        Checks cache first, then calls API chains if data is missing.
+
+        Returns a dictionary with all fields, or None if processing fails.
         """
         logger.info(f"Processing word: {word}")
-        existing_record = self.mongo_client.find_record(key=word, collection_name=self.collection_name, field_name=self.field_name)
 
-        example_sentences = existing_record.get('example_sentences') if existing_record else None
-        improved_meaning = existing_record.get('improved_meaning') if existing_record else None
+        # 1. Check cache for *parsed* data
+        try:
+            existing_record = self.db_client.find_record(
+                key=word,
+                table_name=self.table_name,  # Updated to table_name
+                field_name=self.field_name,
+            )
 
-        if example_sentences and improved_meaning:
-            logger.info(f"Skipping word {word} as it already has example sentences and meaning.")
-            return {
+            if (
+                existing_record
+                and existing_record.get("sentence_1")
+                and existing_record.get("meaning_english")
+            ):
+
+                logger.info(f"Skipping word '{word}': Found complete data in cache.")
+                return {
+                    "word": word,
+                    "sentence_1": existing_record.get("sentence_1"),
+                    "sentence_2": existing_record.get("sentence_2"),
+                    "sentence_3": existing_record.get("sentence_3"),
+                    "meaning_english": existing_record.get("meaning_english"),
+                    "meaning_spanish": existing_record.get("meaning_spanish"),
+                }
+        except Exception as e:
+            logger.error(f"Error checking cache for word '{word}': {e}")
+
+        logger.info(f"No cache found for '{word}', generating new data...")
+
+        try:
+            # 2. Generate new data using LangChain chains
+            sentences_obj = self.sentence_chain.invoke({"word": word})
+            meaning_obj = self.meaning_chain.invoke({"word": word})
+
+            # 3. Combine results into a single dictionary
+            result = {
                 "word": word,
-                "example_sentences": example_sentences,
-                "improved_meaning": improved_meaning,
-                #"pinyin": 'f'
+                **sentences_obj.model_dump(),
+                "meaning_english": meaning_obj.english,
+                "meaning_spanish": meaning_obj.spanish,
             }
 
-        # Generate example sentences
-        if not example_sentences:
-            example_sentences = self._generate_example_sentences(word)
-
-        # Generate improved meaning
-        if not improved_meaning:
-            improved_meaning = self._generate_improved_meaning(word, previous_meaning)
-
-        # Save to DB
-        result = {
-            "word": word,
-            "example_sentences": example_sentences,
-            "improved_meaning": improved_meaning
-        }
-
-        self.mongo_client.insert_record(record=result, columns=['example_sentences', 'improved_meaning'], collection_name=self.collection_name, field_name=self.field_name)
-        logger.info(f"Word {word} processed successfully.")
-        return result
-
-    def _generate_example_sentences(self, word: str) -> str:
-        """
-        Generates example sentences for the word using Groq API.
-        """
-        prompt = (
-            f"使用简体中文字符生成 3 个示例句子，其中包含中文词 '{word}'。"
-            "每个句子应仅使用简体中文字符。"
-            "不解释，不包含标题，只输出句子。格式如下：\n"
-            "1：[句子]。\n"
-            "2：[句子]。\n"
-            "3：[句子]。\n"
-        )
-        return self.api_client.send_prompt(prompt)
-
-    def _generate_improved_meaning(self, word: str, previous_meaning: Optional[str]) -> str:
-        """
-        Generates or improves the meaning of the word in both English and Spanish.
-        """
-        prompt = (
-            f"提供中文词 '{word}' 的基本含义，用英语和西班牙语描述。"
-             "解释应简明清晰，仅提供必要信息而不包含额外背景。"
-             "不解释，不包含标题，只输出结果。格式如下：\n"
-             "english: [含义]。\n"
-             "spanish: [含义]。\n"
+            # 4. Save the *parsed* data to SQLite
+            self.db_client.insert_record(
+                record=result,
+                columns=list(result.keys())[1:],
+                table_name=self.table_name,  # Updated to table_name
+                field_name=self.field_name,
             )
-        return self.api_client.send_prompt(prompt)
 
-    def process_words(self, words: List[str], previous_meanings: Optional[dict] = None) -> pd.DataFrame:
+            logger.info(f"Word '{word}' processed and saved successfully.")
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to process word '{word}' after retries: {e}")
+            return None
+
+    def process_words(self, words: List[str]) -> pd.DataFrame:
         """
         Process a list of Chinese words and return the results in a DataFrame.
         """
         results = []
         for word in words:
-            previous_meaning = previous_meanings.get(word) if previous_meanings else None
-            result = self.process_word(word, previous_meaning)
-            results.append(result)
+            if not word or not word.strip():
+                logger.warning("Skipping empty word.")
+                continue
 
-        # Convert results to DataFrame
+            result = self.process_word(word)
+            if result:
+                results.append(result)
+
+        if not results:
+            logger.warning("No words were processed successfully.")
+            return pd.DataFrame()
+
         df = pd.DataFrame(results)
 
-        # Extract individual sentences and meanings
-        df = self._extract_sentences_and_meanings(df)
-        return df
+        # Reorder columns
+        expected_columns = [
+            "word",
+            "meaning_english",
+            "meaning_spanish",
+            "sentence_1",
+            "sentence_2",
+            "sentence_3",
+        ]
+        final_columns = [col for col in expected_columns if col in df.columns]
 
-    def _extract_sentences_and_meanings(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Extract individual example sentences and meanings into separate columns.
-        """
-        for idx, row in df.iterrows():
-            sentences = row['example_sentences'].split('\n')
+        return df[final_columns]
 
-            logger.info(sentences)
-            logger.info(row['improved_meaning'])
+    def close_db(self):
+        """Closes the database connection."""
+        logger.info("Closing database connection.")
+        self.db_client.close()
 
-            for i, part in enumerate(sentences, start=1):
-                if part.startswith(f"{i}："):
-                    df.at[idx, f'sentence_{i}'] = part[len(f"{i}："):].strip()
 
-            meanings = row['improved_meaning'].split('\n')
-            for part in meanings:
-                if part.startswith("english: "):
-                    df.at[idx, 'meaning_english'] = part[len("english: "):].strip()
-                    #logger.info(f'{word} english: {df['meaning_ennnglish']}')
-                elif part.startswith("spanish: "):
-                    df.at[idx, 'meaning_spanish'] = part[len("spanish: "):].strip()
+if __name__ == "__main__":
+    from SQLiteClient import SQLiteClient
+    from loguru import logger
+    import os
 
-            if(os.getenv('DEBUG')):
-                logger.info(f'{row['word']}')
-                logger.info(f'{row['meaning_english']}')
-                logger.info(f'{row['meaning_spanish']}')
-                logger.info(f'{row['sentence_1']}')
-                logger.info(f'{row['sentence_2']}')
-                logger.info(f'{row['sentence_3']}')
+    # Setup logging
+    logger.add("logs/processing.log", rotation="10 MB")
 
-        # Handle missing values in 'sentence_1', 'sentence_2', 'sentence_3'
-        self._handle_missing_values(df)
-        return df
+    # Set DEBUG mode if needed
+    os.environ["DEBUG"] = "true"
 
-    def _handle_missing_values(self, df: pd.DataFrame):
-        ## Here not working properly
-        """
-        Handle missing values in sentences and meanings.
-        """
-        for idx, row in df.iterrows():
-            if pd.isna(row['sentence_1']) or not row['sentence_1'].strip() or \
-               pd.isna(row['sentence_2']) or not row['sentence_2'].strip() or \
-               pd.isna(row['sentence_3']) or not row['sentence_3'].strip():
-                logger.warning(f"Missing example sentences for word {row['word']} at index {idx}")
-                self.mongo_client.update_field(record=row,value='',collection_name=self.collection_name,field_name="example_sentence")
-            if pd.isna(row['meaning_english']) or not row['meaning_english'].strip() or \
-               pd.isna(row['meaning_spanish']) or not row['meaning_spanish'].strip():
-                logger.warning(f"Missing meaning for word {row['word']} at index {idx}")
-                self.mongo_client.update_field(record=row,value='',collection_name=self.collection_name,field_name="example_sentence")
+    db_client = None  # Define client outside try block
+    try:
+        # Initialize clients
+        # This will create 'ankineitor.db' if it doesn't exist
+        db_client = SQLiteClient(db_path="ankineitor.db")
+        word_processor = LLMProcessor(
+            db_client=db_client,
+            api_key="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",
+        )
+
+        # List of words to process
+        words_to_process = [
+            "你好",
+            "谢谢",
+            "数据",
+            "工程师",
+            "你好",
+        ]  # Duplicate to test caching
+
+        logger.info("Starting word processing job...")
+
+        # Process the words
+        df = word_processor.process_words(words_to_process)
+
+        if not df.empty:
+            logger.info("Successfully processed words. DataFrame head:")
+            print(df.head())
+
+            # Save to CSV
+            df.to_csv("chinese_words_processed.csv", index=False)
+            logger.info("Results saved to 'chinese_words_processed.csv'")
+        else:
+            logger.warning("Job finished, but no data was returned.")
+
+    except Exception as e:
+        logger.critical(f"An unhandled error occurred: {e}")
+
+    finally:
+        # Ensure the database connection is always closed
+        if db_client:
+            db_client.close()

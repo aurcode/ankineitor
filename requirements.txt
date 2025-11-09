@@ -12,6 +12,3 @@ PyPDF2
 python-pptx
 tabulate
 loguru
-fastapi
-uvicorn[standard]
-flask
