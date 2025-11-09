@@ -18,8 +18,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
-# Import the new SQLite client
-from SQLiteClient import SQLiteClient
+# Import the new SQLAlchemy client
+from db_client import SQLAlchemyClient
 
 # Load environment variables
 load_dotenv()
@@ -48,12 +48,12 @@ class WordMeaning(BaseModel):
 class LLMTransformation:
     """
     Processes Chinese words to find meanings and example sentences using
-    LangChain and Groq, caching results in a SQLite database.
+    LangChain and Groq, caching results in a SQLite database via SQLAlchemy.
     """
 
     def __init__(
         self,
-        db_client: SQLiteClient = SQLiteClient(),  # Use SQLiteClient
+        db_client: SQLAlchemyClient = SQLAlchemyClient(),  # Use SQLAlchemyClient
         api_key: Optional[str] = None,
         max_retries: int = 3,
     ):
@@ -121,9 +121,10 @@ class LLMTransformation:
 
         # 1. Check cache for *parsed* data
         try:
+            # This method call is compatible with SQLAlchemyClient
             existing_record = self.db_client.find_record(
                 key=word,
-                table_name=self.table_name,  # Updated to table_name
+                table_name=self.table_name,
                 field_name=self.field_name,
             )
 
@@ -160,11 +161,12 @@ class LLMTransformation:
                 "meaning_spanish": meaning_obj.spanish,
             }
 
-            # 4. Save the *parsed* data to SQLite
+            # 4. Save the *parsed* data to SQLite via SQLAlchemy
+            # This method call is compatible with SQLAlchemyClient
             self.db_client.insert_record(
                 record=result,
-                columns=list(result.keys())[1:],
-                table_name=self.table_name,  # Updated to table_name
+                columns=list(result.keys())[1:],  # `columns` is used by the client
+                table_name=self.table_name,
                 field_name=self.field_name,
             )
 
@@ -204,6 +206,7 @@ class LLMTransformation:
             "sentence_2",
             "sentence_3",
         ]
+        # Filter for columns that actually exist in the DataFrame
         final_columns = [col for col in expected_columns if col in df.columns]
 
         return df[final_columns]
@@ -211,14 +214,11 @@ class LLMTransformation:
     def close_db(self):
         """Closes the database connection."""
         logger.info("Closing database connection.")
+        # This method call is compatible with SQLAlchemyClient
         self.db_client.close()
 
 
 if __name__ == "__main__":
-    from SQLiteClient import SQLiteClient
-    from loguru import logger
-    import os
-
     # Setup logging
     logger.add("logs/processing.log", rotation="10 MB")
 
@@ -229,7 +229,9 @@ if __name__ == "__main__":
     try:
         # Initialize clients
         # This will create 'ankineitor.db' if it doesn't exist
-        db_client = SQLiteClient(db_path="ankineitor.db")
+        # and use the SQLAlchemyClient
+        db_client = SQLAlchemyClient(db_path="ankineitor.db")
+
         word_processor = LLMTransformation(
             db_client=db_client,
             api_key="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",
@@ -265,4 +267,5 @@ if __name__ == "__main__":
     finally:
         # Ensure the database connection is always closed
         if db_client:
+            # This call is compatible with SQLAlchemyClient
             db_client.close()
