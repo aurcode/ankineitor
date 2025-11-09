@@ -5,7 +5,7 @@ import yaml
 from pathlib import Path
 from typing import List, Set, Union, Optional
 
-from services.Processing.config_schema import AnkiConfig, MediaField
+from config_schema import AnkiConfig, MediaField
 
 
 class DeckGenerator:

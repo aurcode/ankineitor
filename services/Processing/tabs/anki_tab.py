@@ -8,6 +8,7 @@ from loguru import logger
 from deck_generator import DeckGenerator
 
 # --- Default Anki Configs (from your example) ---
+# This is the "basic" setup
 DEFAULT_MODEL_TEMPLATES_YAML = """
 main:
   - name: "Card 1"
@@ -26,13 +27,159 @@ css: |
 DEFAULT_TAG_RULES_YAML = """
 - static_tags:
     - "@AURCODE"
-    - "RefactoredDeck"
-- prefix: "Course"
-  column: "Category"
+    - "PipelineDeck"
+- prefix: "Category"
+  column: "categories" # This now matches your CSV
   split_by: ","
-- prefix: "Lesson"
-  column: "Lesson"
 """
+
+# --- NEW: Full Configuration for the "Chinese Pipeline" Button ---
+# This dictionary contains all the settings for your specific CSV
+CHINESE_PIPELINE_SETUP = {
+    "model_id": 20251110,  # New custom ID for this model
+    "model_name": "Chinese Pipeline Model (Full)",
+    "deck_id": 20251111,
+    "note_type": "Chinese (Pipeline)",
+    # 1. Anki Model Fields: All the fields in the Anki note
+    "model_fields": [
+        {"name": "Word"},  # Front
+        {"name": "Pinyin"},
+        {"name": "English Meaning"},
+        {"name": "Spanish Meaning"},
+        {"name": "Audio"},
+        {"name": "Example 1"},
+        {"name": "Example 2"},
+        {"name": "Example 3"},
+        {"name": "Translation (Extras)"},
+        {"name": "Categories"},
+        {"name": "Timestamp"},
+    ],
+    # 2. CSV Column Mapping: Connects CSV columns to Anki fields (in order)
+    "model_builder": [
+        {"csv_column": "word"},
+        {"csv_column": "pinyin"},
+        {"csv_column": "meaning_english"},
+        {"csv_column": "meaning_spanish"},
+        {"csv_column": "audio"},
+        {"csv_column": "sentence_1"},
+        {"csv_column": "sentence_2"},
+        {"csv_column": "sentence_3"},
+        {"csv_column": "translation"},
+        {"csv_column": "categories"},
+        {"csv_column": "timestamp"},
+    ],
+    # 3. Media Fields: Tells the generator which columns are files
+    "media_fields": [
+        {"column_name": "audio", "media_type": "audio"},
+    ],
+    # 4. "Beautiful Template" (YAML for Templates + CSS)
+    "model_templates_yaml": """
+main:
+  - name: "Card 1 (Word -> All)"
+    qfmt: |
+      <div class="card-front">
+        <h1>{{Word}}</h1>
+      </div>
+    afmt: |
+      {{FrontSide}}
+      <hr id=answer>
+      <div class="card-back">
+        <div class="pinyin">{{Pinyin}}</div>
+        <div class="audio">{{Audio}}</div>
+        
+        <div class="meanings">
+          <b>English:</b> {{English Meaning}}<br>
+          <b>Spanish:</b> {{Spanish Meaning}}
+        </div>
+        
+        <div class="examples">
+          <h3>Examples</h3>
+          <ul>
+            {{#Example 1}}<li>{{Example 1}}</li>{{/Example 1}}
+            {{#Example 2}}<li>{{Example 2}}</li>{{/Example 2}}
+            {{#Example 3}}<li>{{Example 3}}</li>{{/Example 3}}
+          </ul>
+        </div>
+        
+        <div class="footer">
+          <b>Extras:</b> {{Translation (Extras)}}<br>
+          <b>Tags:</b> {{Categories}}<br>
+          <b>Added:</b> {{Timestamp}}
+        </div>
+      </div>
+css: |
+  .card {
+    font-family: Arial, 'Noto Sans SC', sans-serif;
+    font-size: 20px;
+    text-align: center;
+    color: black;
+    background-color: white;
+  }
+  .card-front h1 {
+    font-family: 'Noto Sans SC', sans-serif;
+    font-size: 64px;
+    font-weight: 500;
+    margin: 0;
+  }
+  .card-back h1 {
+    font-family: 'Noto Sans SC', sans-serif;
+    font-size: 48px;
+    font-weight: 500;
+    margin: 0;
+  }
+  .pinyin {
+    font-size: 24px;
+    color: #555;
+  }
+  .audio {
+    margin: 15px 0;
+  }
+  .meanings {
+    margin-top: 20px;
+    font-size: 18px;
+    text-align: left;
+    display: inline-block;
+    border-left: 3px solid #0099ff;
+    padding-left: 10px;
+  }
+  .examples {
+    margin-top: 20px;
+    text-align: left;
+    max-width: 90%;
+    display: inline-block;
+  }
+  .examples h3 {
+    margin-bottom: 5px;
+    font-size: 18px;
+    font-weight: bold;
+  }
+  .examples ul {
+    list-style: decimal;
+    margin-left: 20px;
+  }
+  .examples li {
+    margin-bottom: 5px;
+  }
+  .footer {
+    margin-top: 30px;
+    font-size: 14px;
+    color: #888;
+    border-top: 1px solid #eee;
+    padding-top: 10px;
+  }
+""",
+    # 5. Tag Rules: Auto-generates tags from the 'categories' column
+    "tag_rules_yaml": """
+- static_tags:
+    - "Chinese"
+    - "Pipeline"
+- prefix: "Category"
+  column: "categories" # Matches the CSV column
+  split_by: ","
+  # Cleans up the "['...']" format from the CSV
+  strip: ' []''"'
+""",
+}
 
 
 def render_anki_tab():
@@ -48,6 +195,7 @@ def render_anki_tab():
             "model_name": "AURCODE Refactored Model",
             "deck_id": 1234567890,
             "note_type": "Vocabulary",
+            # This list defines the Anki fields (no change)
             "model_fields": [
                 {"name": "Front"},
                 {"name": "Back"},
@@ -56,20 +204,24 @@ def render_anki_tab():
                 {"name": "Image"},
                 {"name": "Notes"},
             ],
+            # UPDATED: This now matches your pipeline output CSV by default
             "model_builder": [
-                {"csv_column": "Word"},
-                {"csv_column": "Definition"},
-                {"csv_column": "Sentence"},
-                {"csv_column": "Sound"},
-                {"csv_column": "Picture"},
-                {"csv_column": "ExtraInfo"},
+                {"csv_column": "word"},  # Maps to Front
+                {"csv_column": "meaning_english"},  # Maps to Back
+                {"csv_column": "sentence_1"},  # Maps to Example
+                {"csv_column": "audio"},  # Maps to Audio
+                {
+                    "csv_column": "image_placeholder"
+                },  # Maps to Image (a non-existent col is fine)
+                {"csv_column": "categories"},  # Maps to Notes
             ],
+            # UPDATED: This now matches your pipeline output CSV by default
             "media_fields": [
-                {"column_name": "Sound", "media_type": "audio"},
-                {"column_name": "Picture", "media_type": "image"},
+                {"column_name": "audio", "media_type": "audio"},
+                {"column_name": "image_placeholder", "media_type": "image"},
             ],
             "model_templates_yaml": DEFAULT_MODEL_TEMPLATES_YAML,
-            "tag_rules_yaml": DEFAULT_TAG_RULES_YAML,
+            "tag_rules_yaml": DEFAULT_TAG_RULES_YAML,  # This now uses the new default
         }
 
     cfg = st.session_state.anki_config
@@ -119,6 +271,21 @@ def render_anki_tab():
 
     with anki_col2:
         st.subheader("2. Input Data")
+
+        # --- NEW: "Chinese Setup" Button ---
+        if st.button(
+            "Load 🇨🇳 Chinese Pipeline Setup",
+            help="Click to auto-fill all fields for the standard pipeline CSV output",
+            use_container_width=True,
+        ):
+            # Update all config fields in session state
+            for key, value in CHINESE_PIPELINE_SETUP.items():
+                st.session_state.anki_config[key] = value
+
+            st.success("Loaded Chinese Pipeline setup!")
+            st.rerun()  # Rerun to reflect changes in all widgets
+        # --- End of New Button ---
+
         uploaded_csv = st.file_uploader(
             "Upload Vocabulary CSV", type=["csv"], key="anki_csv_uploader"
         )

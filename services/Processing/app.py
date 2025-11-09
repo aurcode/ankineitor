@@ -18,17 +18,11 @@ from llm_transformation import LLMTransformation
 from tabs.pipeline_tab import render_pipeline_tab
 from tabs.merge_csv_tab import render_merge_csv_tab
 
-# --- Anki Tab (Optional) ---
-try:
-    from deck_generator import DeckGenerator
-    from tabs.anki_tab import render_anki_tab
-
-    ANKI_TAB_ENABLED = True
-except ImportError:
-    DeckGenerator = None
-    render_anki_tab = None
-    ANKI_TAB_ENABLED = False
-    logger.warning("deck_generator.py or anki_tab.py not found. Anki tab disabled.")
+# --- Anki Tab (Mandatory) ---
+# We now import this directly. If DeckGenerator or the tab
+# file is missing, the app will fail, as expected.
+from deck_generator import DeckGenerator
+from tabs.anki_tab import render_anki_tab
 
 
 # --- App Configuration ---
@@ -88,21 +82,23 @@ if not pipeline_db_client or not all_transformations:
     st.error("Application cannot start. Dependencies failed to load.")
 else:
     # --- Tab Creation ---
-    tab_list = ["🚀 Run Pipeline", "📊 Merge CSVs"]
-    if ANKI_TAB_ENABLED:
-        tab_list.append(" decks.apkg Anki Deck Generator")
+    # The Anki tab is now mandatory
+    tab_list = [
+        "🤖Anki Deck Generator",
+        "🚀 Run Pipeline",
+        "📊 Merge CSVs",
+    ]
 
     tabs = st.tabs(tab_list)
 
     # --- Render Tab 1 ---
     with tabs[0]:
-        render_pipeline_tab(pipeline_db_client, all_transformations)
+        render_anki_tab()
 
     # --- Render Tab 2 ---
     with tabs[1]:
-        render_merge_csv_tab()
+        render_pipeline_tab(pipeline_db_client, all_transformations)
 
-    # --- Render Tab 3 (Conditional) ---
-    if ANKI_TAB_ENABLED and len(tabs) > 2:
-        with tabs[2]:
-            render_anki_tab()
+    # --- Render Tab 3 (Mandatory) ---
+    with tabs[2]:
+        render_merge_csv_tab()
