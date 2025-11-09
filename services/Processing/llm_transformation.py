@@ -45,7 +45,7 @@ class WordMeaning(BaseModel):
 # --- Refactored ChineseWordProcessor ---
 
 
-class LLMProcessor:
+class LLMTransformation:
     """
     Processes Chinese words to find meanings and example sentences using
     LangChain and Groq, caching results in a SQLite database.
@@ -64,7 +64,7 @@ class LLMProcessor:
 
         # 1. Initialize Groq Chat Model
         self.llm = ChatGroq(
-            api_key=api_key or os.getenv("API_KEY"),
+            api_key="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",
             model="llama-3.3-70b-versatile",
         )
 
@@ -230,7 +230,7 @@ if __name__ == "__main__":
         # Initialize clients
         # This will create 'ankineitor.db' if it doesn't exist
         db_client = SQLiteClient(db_path="ankineitor.db")
-        word_processor = LLMProcessor(
+        word_processor = LLMTransformation(
             db_client=db_client,
             api_key="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",
         )
