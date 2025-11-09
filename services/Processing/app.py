@@ -148,20 +148,78 @@ else:
                         )
 
                     st.success("Pipeline run complete!")
-                    st.dataframe(df_results)
 
-                    # Provide download button
-                    csv = df_results.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        label="Download results as CSV",
-                        data=csv,
-                        file_name="pipeline_results.csv",
-                        mime="text/csv",
-                    )
+                    # --- NEW: Store results in session state ---
+                    st.session_state.df_results = df_results
 
                 except Exception as e:
                     logger.error(f"Error during pipeline run: {e}")
                     st.error(f"An error occurred: {e}")
+                    # Clear session state on error
+                    if "df_results" in st.session_state:
+                        del st.session_state.df_results
+
+        # --- NEW: Display results and category section if results exist in state ---
+        if "df_results" in st.session_state and not st.session_state.df_results.empty:
+            df_results = st.session_state.df_results
+
+            st.subheader("Results")
+            st.dataframe(df_results)
+
+            # Provide download button for the current results
+            csv = df_results.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="Download results as CSV",
+                data=csv,
+                file_name="pipeline_results.csv",
+                mime="text/csv",
+                key="download_button",  # Key to differentiate
+            )
+
+            # --- NEW: Add Category Section ---
+            st.divider()
+            st.subheader("3. (Optional) Add Category")
+            st.markdown(
+                """
+                Add a custom category (like 'HSK1' or 'My List') to all 
+                the words you just processed. This will be saved to the database.
+                """
+            )
+
+            category_name = st.text_input("Enter a category for these words:")
+
+            if st.button("Add Category to DB", use_container_width=True):
+                if not category_name:
+                    st.warning("Please enter a category name.")
+                else:
+                    try:
+                        with st.spinner(f"Adding category '{category_name}'..."):
+                            # Re-init pipeline. It's cheap and uses the cached client.
+                            # We only need it for the .transform_categories method.
+                            pipeline = TransformationPipeline(
+                                db_client=pipeline_db_client,
+                                transformations=[],  # No transforms needed here
+                                table_name="hanzi_processing",
+                            )
+
+                            # Call the function from pipeline.py
+                            df_categorized = pipeline.transform_categories(
+                                df_results, category=category_name
+                            )
+
+                        st.success(
+                            f"Category '{category_name}' added to {len(df_categorized)} words!"
+                        )
+
+                        # Update the dataframe in the UI and state
+                        st.session_state.df_results = df_categorized
+
+                        # Rerun to update the dataframe on screen
+                        st.rerun()
+
+                    except Exception as e:
+                        logger.error(f"Error adding category: {e}")
+                        st.error(f"An error occurred while adding category: {e}")
 
     # --- Tab 2: Merge CSVs ---
     with tab2:

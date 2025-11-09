@@ -6,14 +6,22 @@ import pandas as pd
 from transformations import Transformation
 from tqdm import tqdm
 
+# Import LLMTransformation to check its type
+try:
+    from llm_transformation import LLMTransformation
+except ImportError:
+    # Handle case where llm_transformation might not exist
+    LLMTransformation = None
+
 
 class TransformationPipeline:
     """
     Manages the full ETL pipeline:
-    1. Check cache (DB)
-    2. Process only new items
+    1. Check cache (DB) for main transforms
+    2. Process only new items with main transforms
     3. Save new items to cache (DB)
-    4. Return combined results
+    4. Run "post-processing" transforms (like LLM) on the *entire* dataset
+    5. Return combined results
     """
 
     def __init__(
@@ -24,12 +32,30 @@ class TransformationPipeline:
         key_field: str = "word",
     ):
         self.db_client = db_client
-        self.transformations = transformations
         self.table_name = table_name
         self.key_field = key_field
-        # Get all column names from the transformations
-        self.columns = [t.column_name for t in self.transformations]
-        logger.info(f"Pipeline initialized for table '{table_name}'.")
+
+        # Separate LLM transforms from main transforms
+        self.main_transformations: List[Transformation] = []
+        self.llm_transformations: List[Transformation] = []
+
+        if LLMTransformation:  # Check if class was imported
+            for t in transformations:
+                if isinstance(t, LLMTransformation):
+                    self.llm_transformations.append(t)
+                else:
+                    self.main_transformations.append(t)
+        else:
+            logger.warning("LLMTransformation class not found, adding all to main.")
+            self.main_transformations = transformations
+
+        # Columns for the *main* pipeline cache
+        self.columns = [t.column_name for t in self.main_transformations]
+        logger.info(
+            f"Pipeline initialized for table '{table_name}'. "
+            f"Main transforms: {len(self.main_transformations)}, "
+            f"LLM transforms: {len(self.llm_transformations)}"
+        )
 
     def transform_data(self, words: List[str], dev_mode: bool = False) -> pd.DataFrame:
         """
@@ -44,14 +70,14 @@ class TransformationPipeline:
         df_original = pd.DataFrame({self.key_field: words})
         unique_words = df_original[self.key_field].unique()
 
-        # 2. Check cache (DB) in bulk
+        # 2. Check cache (DB) in bulk for *main* transforms
         logger.debug(f"Checking cache for {len(unique_words)} unique words...")
         cached_records = self.db_client.find_many_by_field(
             keys=unique_words, table_name=self.table_name, field_name=self.key_field
         )
         df_cached = pd.DataFrame(cached_records)
 
-        # 3. Identify new words to process
+        # 3. Identify new words to process for *main* transforms
         if not df_cached.empty:
             processed_words = set(df_cached[self.key_field])
             new_words = [w for w in unique_words if w not in processed_words]
@@ -59,15 +85,15 @@ class TransformationPipeline:
             new_words = unique_words
 
         logger.info(
-            f"Found {len(df_cached)} cached words. Processing {len(new_words)} new words."
+            f"Found {len(df_cached)} cached words. Processing {len(new_words)} new words with main transforms."
         )
 
-        # 4. Process only new words through the pipeline
+        # 4. Process only new words through the *main* pipeline
         if len(new_words) > 0:
             df_new = pd.DataFrame({self.key_field: new_words})
 
-            # Run each transformation
-            for transform in self.transformations:
+            # Run each main transformation
+            for transform in self.main_transformations:
                 df_new = transform.apply(df_new)
 
             # 5. Save new results to cache (DB) in bulk
@@ -82,10 +108,23 @@ class TransformationPipeline:
         else:
             df_processed = df_cached  # No new words, just use cached data
 
-        # 7. Merge with original list to preserve order and duplicates
-        final_columns = [self.key_field] + [
-            col for col in self.columns if col in df_processed
-        ]
+        # 7. (NEW STEP) Run LLM transformations on the *entire* processed set
+        # This leverages the LLM's own internal caching.
+        if self.llm_transformations:
+            logger.info(
+                f"Running LLM transformations on {len(df_processed)} total words..."
+            )
+            for llm_transform in self.llm_transformations:
+                # The llm_transform.apply method will handle its own caching
+                # and merge columns back into df_processed
+                df_processed = llm_transform.apply(df_processed)
+            logger.info("LLM transformations complete.")
+
+        # 8. Merge with original list to preserve order and duplicates
+
+        # Get all columns from the final processed DataFrame
+        final_columns = list(df_processed.columns)
+
         df_final = pd.merge(
             df_original, df_processed[final_columns], on=self.key_field, how="left"
         )
