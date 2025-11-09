@@ -1,4 +1,4 @@
 *.db
-*.mp3
+**/*.mp3
 *.sqlite
 *.csv
