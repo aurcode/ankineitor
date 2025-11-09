@@ -5,17 +5,19 @@ import yaml
 from pathlib import Path
 from typing import List, Set, Union, Optional
 
-from config_schema import AnkiConfig, MediaField
+from services.Processing.config_schema import AnkiConfig, MediaField
+
 
 class DeckGenerator:
     """
     Generates Anki decks from a pandas DataFrame based on a validated YAML configuration.
     """
+
     # Define media format mappings
     MEDIA_FORMATS = {
-        'audio': '[sound:{basename}]',
-        'image': '<img src="{basename}">',
-        'video': '<video controls autoplay muted src="{basename}" />'
+        "audio": "[sound:{basename}]",
+        "image": '<img src="{basename}">',
+        "video": '<video controls autoplay muted src="{basename}" />',
     }
 
     def __init__(self, config_path: Union[str, Path]):
@@ -28,7 +30,7 @@ class DeckGenerator:
         self.config_path = Path(config_path)
         logger.info(f"Loading configuration from {self.config_path}")
         try:
-            with self.config_path.open('r', encoding='utf-8') as f:
+            with self.config_path.open("r", encoding="utf-8") as f:
                 config_data = yaml.safe_load(f)
             self.config = AnkiConfig.parse_obj(config_data)
             logger.success("Configuration loaded and validated successfully.")
@@ -41,7 +43,7 @@ class DeckGenerator:
 
         self.model = self._create_model()
 
-    def _create_model(self, select_model: str = 'main') -> genanki.Model:
+    def _create_model(self, select_model: str = "main") -> genanki.Model:
         """Create an Anki model based on the validated configuration."""
         logger.info("Creating Anki model.")
         return genanki.Model(
@@ -49,7 +51,7 @@ class DeckGenerator:
             self.config.basics.model_name,
             fields=self.config.model_fields,
             templates=self.config.model_templates[select_model],
-            css=self.config.model_templates['css']
+            css=self.config.model_templates["css"],
         )
 
     def _collect_media_files(self, df: pd.DataFrame, strict: bool = False) -> Set[Path]:
@@ -70,7 +72,9 @@ class DeckGenerator:
         for media_field in self.config.media_fields:
             col = media_field.column_name
             if col not in df.columns:
-                logger.warning(f"Media column '{col}' not found in DataFrame. Skipping.")
+                logger.warning(
+                    f"Media column '{col}' not found in DataFrame. Skipping."
+                )
                 continue
 
             for filename in df[col].dropna():
@@ -85,9 +89,11 @@ class DeckGenerator:
             error_msg = f"Strict mode enabled. Missing {len(missing_files)} media file(s): {missing_files}"
             logger.error(error_msg)
             raise FileNotFoundError(error_msg)
-        
+
         if missing_files:
-             logger.warning(f"Found {len(missing_files)} missing media file(s). They will be ignored.")
+            logger.warning(
+                f"Found {len(missing_files)} missing media file(s). They will be ignored."
+            )
 
         logger.info(f"Collected {len(media_files)} unique media files.")
         return media_files
@@ -111,7 +117,7 @@ class DeckGenerator:
                 if path.exists():
                     template = self.MEDIA_FORMATS.get(media_type, "")
                     return template.format(basename=path.name)
-            return path_str # Return original value if not a valid, existing path
+            return path_str  # Return original value if not a valid, existing path
 
         for media_field in self.config.media_fields:
             col = media_field.column_name
@@ -128,11 +134,11 @@ class DeckGenerator:
         for rule in self.config.tag_rules:
             if rule.static_tags:
                 tags.extend(rule.static_tags)
-            
+
             if rule.column and rule.column in card and pd.notna(card[rule.column]):
                 content = str(card[rule.column])
                 prefix = f"{rule.prefix}:" if rule.prefix else ""
-                
+
                 if rule.split_by:
                     items = [i.strip() for i in content.split(rule.split_by)]
                     tags.extend([f"{prefix}{item}" for item in items])
@@ -142,21 +148,21 @@ class DeckGenerator:
 
     def _build_fields(self, card: pd.Series) -> List[str]:
         """Build fields for an Anki note based on card data."""
-        return [str(card.get(field, '')) for field in self.config.model_builder]
+        return [str(card.get(field, "")) for field in self.config.model_builder]
 
     def _create_note(self, card_data: pd.Series) -> Optional[genanki.Note]:
         """Create an Anki note from a row of the DataFrame, skipping if essential fields are empty."""
         fields = self._build_fields(card_data)
-        
+
         # Assume first two fields are essential (e.g., Front, Back)
         if not fields[0] or not fields[1]:
-            logger.warning(f"Skipping note creation for row due to empty essential fields: {card_data.name}")
+            logger.warning(
+                f"Skipping note creation for row due to empty essential fields: {card_data.name}"
+            )
             return None
-            
+
         return genanki.Note(
-            model=self.model,
-            tags=self._build_tags(card_data),
-            fields=fields
+            model=self.model, tags=self._build_tags(card_data), fields=fields
         )
 
     def generate_deck(
@@ -164,7 +170,7 @@ class DeckGenerator:
         df: pd.DataFrame,
         deck_name: str,
         output_path: Union[str, Path] = Path("./"),
-        strict: bool = False
+        strict: bool = False,
     ) -> Path:
         """
         Generates an Anki deck from a pandas DataFrame.
@@ -179,7 +185,7 @@ class DeckGenerator:
             Path: The filepath of the generated .apkg file.
         """
         logger.info(f"Starting deck generation for '{deck_name}'.")
-        
+
         deck = genanki.Deck(self.config.basics.deck_id, deck_name)
         media_files = self._collect_media_files(df, strict=strict)
         df_formatted = self._format_media_df(df)
@@ -205,10 +211,55 @@ class DeckGenerator:
             output_dir = Path(output_path)
             output_dir.mkdir(parents=True, exist_ok=True)
             filepath = output_dir / f"{deck_name}.apkg"
-            
+
             package.write_to_file(filepath)
             logger.success(f"Deck successfully written to {filepath}.")
             return filepath
         except Exception as e:
             logger.error(f"Error writing deck to file: {e}")
             raise
+
+
+def main():
+    """
+    Main function to run the deck generation process.
+    """
+    # Define paths based on the project structure
+    CONFIG_PATH = Path("config.yaml")
+    DATA_PATH = Path("data/vocabulary.csv")
+    OUTPUT_DIR = Path("output/")
+    DECK_NAME = "My English Vocabulary"
+
+    # --- Pre-run Checks ---
+    if not CONFIG_PATH.exists():
+        logger.error(f"Configuration file not found at '{CONFIG_PATH}'. Exiting.")
+        return
+
+    if not DATA_PATH.exists():
+        logger.error(f"Data file not found at '{DATA_PATH}'. Exiting.")
+        return
+
+    # --- Deck Generation ---
+    try:
+        # 1. Load the data from CSV into a pandas DataFrame
+        logger.info(f"Reading data from {DATA_PATH}...")
+        df = pd.read_csv(DATA_PATH)
+        df = df.astype(object).where(pd.notnull(df), None)  # Replace NaN with None
+
+        # 2. Initialize the DeckGenerator with the config file
+        generator = DeckGenerator(config_path=CONFIG_PATH)
+
+        # 3. Generate the deck
+        generator.generate_deck(
+            df=df,
+            deck_name=DECK_NAME,
+            output_path=OUTPUT_DIR,
+            strict=False,  # Set to True to fail if media is missing
+        )
+
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during deck generation: {e}")
+
+
+if __name__ == "__main__":
+    main()
