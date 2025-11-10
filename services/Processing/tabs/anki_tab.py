@@ -29,7 +29,7 @@ DEFAULT_TAG_RULES_YAML = """
     - "@AURCODE"
     - "PipelineDeck"
 - prefix: "Category"
-  column: "categories" # This now matches your CSV
+  # column: "categories" # Matches the CSV column
   split_by: ","
 """
 

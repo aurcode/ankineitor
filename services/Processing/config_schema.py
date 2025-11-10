@@ -15,6 +15,12 @@ class BasicsConfig(BaseModel):
     note_type: str
 
 
+class ModelFieldSchema(BaseModel):
+    """Schema for a single field in the Anki model."""
+
+    name: str
+
+
 class MediaField(BaseModel):
     """Schema for a single media field mapping."""
 
@@ -36,7 +42,7 @@ class AnkiConfig(BaseModel):
     """Root schema for the entire configuration file."""
 
     basics: BasicsConfig
-    model_fields: List[Dict[str, str]]
+    model_fields: List[ModelFieldSchema]
     model_templates: Dict[str, Any]
     model_builder: List[str]
     media_fields: List[MediaField] = Field(default_factory=list)

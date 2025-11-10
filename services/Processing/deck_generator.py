@@ -1,3 +1,4 @@
+import re
 import genanki
 from loguru import logger
 import pandas as pd
@@ -54,9 +55,12 @@ class DeckGenerator:
         model_id = self.config.basics.model_id
         model_name = self.config.basics.model_name
 
-        # Use the RAW dictionary for complex lists/dicts that genanki needs
+        # Use the validated Pydantic model for fields, and raw data for templates/css
+        # as genanki expects simple dicts/lists.
         try:
-            raw_fields = self.raw_config_data["model_fields"]
+            # Convert Pydantic model list back to a list of dicts for genanki
+            validated_fields = [field.dict() for field in self.config.model_fields]
+
             raw_templates = self.raw_config_data["model_templates"][select_model]
             raw_css = self.raw_config_data["model_templates"]["css"]
         except KeyError as e:
@@ -70,21 +74,12 @@ class DeckGenerator:
             )
             raise
 
-        # Add defense against the 'int' error
-        if not isinstance(raw_fields, list):
-            logger.critical(
-                f"'model_fields' in config is not a list. Got: {type(raw_fields)}"
-            )
-            raise TypeError(
-                f"'model_fields' must be a list, but got {type(raw_fields)}"
-            )
-
-        logger.info(f"Passing {len(raw_fields)} fields to genanki.Model")
+        logger.info(f"Passing {len(validated_fields)} fields to genanki.Model")
 
         return genanki.Model(
             model_id,
             model_name,
-            fields=raw_fields,
+            fields=validated_fields,
             templates=raw_templates,
             css=raw_css,
         )
@@ -172,21 +167,22 @@ class DeckGenerator:
 
             if rule.column and rule.column in card and pd.notna(card[rule.column]):
                 content = str(card[rule.column])
-                prefix = (
-                    f"{rule.prefix}::" if rule.prefix else ""
-                )  # Use :: for hierarchical tags
+                prefix = f"{rule.prefix}::" if rule.prefix else ""
 
-                # NEW: Clean the content *before* splitting
-                if rule.strip_chars:
-                    content = content.strip(rule.strip_chars)
+                # Use regex to find all quoted strings, which is robust for formats
+                # like "['item 1', 'item 2']" or '["item1", "item2"]'
+                items = re.findall(r'["\'](.*?_*)["\']', content)
 
-                if rule.split_by:
-                    items = [
-                        i.strip() for i in content.split(rule.split_by) if i.strip()
-                    ]
+                if items:
+                    # No need to split or strip further, regex handles it
                     tags.extend([f"{prefix}{item}" for item in items])
-                elif content:  # Only add if content isn't empty after stripping
-                    tags.append(f"{prefix}{content}")
+                elif content:
+                    # Fallback for simple, non-list strings
+                    # Clean the content before adding
+                    if rule.strip_chars:
+                        content = content.strip(rule.strip_chars)
+                    if content:
+                        tags.append(f"{prefix}{content}")
 
         # Return a list of unique, non-empty tags
         return sorted(list(set(filter(None, tags))))
