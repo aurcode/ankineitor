@@ -296,87 +296,142 @@ def render_anki_tab():
         if st.button(
             "Generate Anki Deck (.apkg)", type="primary", use_container_width=True
         ):
+            # --- 1. PRE-VALIDATION ---
+            # We will collect all config errors and show them at once.
+            errors = []
+
+            # 1a. Check for required file and text inputs
             if not uploaded_csv:
                 st.warning("Please upload a vocabulary CSV file.")
-            else:
-                try:
-                    with st.spinner("Generating Anki Deck..."):
-                        # 1. Load Data
-                        logger.info(
-                            f"Reading data from uploaded file: {uploaded_csv.name}"
-                        )
-                        df = pd.read_csv(uploaded_csv)
-                        df = df.astype(object).where(
-                            pd.notnull(df), None
-                        )  # Replace NaN
+                # We return here because we can't validate the CSV-dependent
+                # configs below without a file.
+                return
 
-                        # 2. Assemble Config
-                        logger.info("Assembling configuration from UI...")
-                        config_dict = {
-                            "basics": {
-                                "model_id": cfg["model_id"],
-                                "model_name": cfg["model_name"],
-                                "deck_id": cfg["deck_id"],
-                                "note_type": cfg["note_type"],
-                            },
-                            "model_fields": cfg["model_fields"].to_dict("records"),
-                            "model_builder": cfg["model_builder"][
-                                "csv_column"
-                            ].tolist(),
-                            "media_fields": cfg["media_fields"].to_dict("records"),
-                            "model_templates": yaml.safe_load(
-                                cfg["model_templates_yaml"]
-                            ),
-                            "tag_rules": yaml.safe_load(cfg["tag_rules_yaml"]),
-                        }
+            if not deck_name:
+                errors.append("Please provide a 'Deck Name'.")
 
-                        # 3. Write temp config
-                        temp_config_file = Path("temp_anki_config.yaml")
-                        with open(temp_config_file, "w", encoding="utf-8") as f:
-                            yaml.dump(config_dict, f, allow_unicode=True)
+            if not output_dir:
+                errors.append("Please provide an 'Output Directory'.")
 
-                        # 4. Ensure output dir exists
-                        output_path = Path(output_dir)
-                        output_path.mkdir(exist_ok=True)
+            # 1b. Validate YAML parsing
+            try:
+                model_templates_dict = yaml.safe_load(cfg["model_templates_yaml"])
+                if not isinstance(model_templates_dict, dict):
+                    errors.append(
+                        "'Model Templates' YAML is invalid (must be a dictionary)."
+                    )
+            except yaml.YAMLError as e:
+                errors.append(f"Error parsing 'Model Templates' YAML: {e}")
+                model_templates_dict = None
 
-                        # 5. Initialize Generator and Run
-                        logger.info("Initializing DeckGenerator...")
-                        generator = DeckGenerator(config_path=temp_config_file)
+            try:
+                tag_rules_list = yaml.safe_load(cfg["tag_rules_yaml"])
+                if not isinstance(tag_rules_list, list):
+                    errors.append("'Tag Rules' YAML is invalid (must be a list).")
+            except yaml.YAMLError as e:
+                errors.append(f"Error parsing 'Tag Rules' YAML: {e}")
+                tag_rules_list = None
 
-                        logger.info(f"Generating deck '{deck_name}'...")
-                        generator.generate_deck(
-                            df=df,
-                            deck_name=deck_name,
-                            output_path=output_path,
-                            strict=False,
-                        )
+            # 1c. Validate DataFrame-based configs
+            model_fields_df = cfg["model_fields"]
+            model_builder_df = cfg["model_builder"]
+            media_fields_df = cfg["media_fields"]  # OK if this one is empty
 
-                        deck_file_path = output_path / f"{deck_name}.apkg"
+            if model_fields_df.empty:
+                errors.append("'Anki Model Fields' cannot be empty.")
 
-                        # 6. Clean up temp file
-                        temp_config_file.unlink()
+            if model_builder_df.empty:
+                errors.append("'CSV Column Mapping' cannot be empty.")
 
-                        if deck_file_path.exists():
-                            st.success(
-                                f"Deck '{deck_name}.apkg' generated successfully!"
+            # 1d. Check for logic errors (mismatched lengths)
+            if not model_fields_df.empty and not model_builder_df.empty:
+                if len(model_fields_df) != len(model_builder_df):
+                    errors.append(
+                        f"Field mismatch: You have {len(model_fields_df)} 'Anki Model Fields' "
+                        f"but {len(model_builder_df)} 'CSV Column Mappings'. These must be equal."
+                    )
+
+            # --- 2. EXECUTION ---
+            # If we found any errors, show them and stop.
+            if errors:
+                st.error("Please fix the following configuration errors:")
+                for err in errors:
+                    st.error(f"- {err}")
+                return  # Stop execution!
+
+            # If all checks passed, proceed with generation
+            try:
+                with st.spinner("Generating Anki Deck..."):
+                    # 1. Load Data
+                    logger.info(f"Reading data from uploaded file: {uploaded_csv.name}")
+                    df = pd.read_csv(uploaded_csv)
+                    df = df.astype(object).where(pd.notnull(df), None)  # Replace NaN
+
+                    # 2. Assemble Config (using validated variables)
+                    logger.info("Assembling configuration from UI...")
+                    config_dict = {
+                        "basics": {
+                            # Explicitly cast to int to be defensive.
+                            # st.number_input can return float (e.g., 123.0)
+                            "model_id": int(cfg["model_id"]),
+                            "model_name": cfg["model_name"],
+                            "deck_id": int(cfg["deck_id"]),
+                            "note_type": cfg["note_type"],
+                        },
+                        "model_fields": model_fields_df.to_dict("records"),
+                        "model_builder": model_builder_df["csv_column"].tolist(),
+                        "media_fields": media_fields_df.to_dict("records"),
+                        "model_templates": model_templates_dict,  # Use parsed dict
+                        "tag_rules": tag_rules_list,  # Use parsed list
+                    }
+
+                    # 3. Write temp config
+                    temp_config_file = Path("temp_anki_config.yaml")
+                    with open(temp_config_file, "w", encoding="utf-8") as f:
+                        yaml.dump(config_dict, f, allow_unicode=True)
+
+                    # 4. Ensure output dir exists
+                    output_path = Path(output_dir)
+                    output_path.mkdir(exist_ok=True)
+
+                    # 5. Initialize Generator and Run
+                    logger.info("Initializing DeckGenerator...")
+                    generator = DeckGenerator(config_path=temp_config_file)
+
+                    logger.info(f"Generating deck '{deck_name}'...")
+                    generator.generate_deck(
+                        df=df,
+                        deck_name=deck_name,
+                        output_path=output_path,
+                        strict=False,
+                    )
+
+                    deck_file_path = output_path / f"{deck_name}.apkg"
+
+                    # 6. Clean up temp file
+                    temp_config_file.unlink()
+
+                    if deck_file_path.exists():
+                        st.success(f"Deck '{deck_name}.apkg' generated successfully!")
+                        # 7. Provide download
+                        with open(deck_file_path, "rb") as f:
+                            st.download_button(
+                                label=f"Download {deck_name}.apkg",
+                                data=f.read(),
+                                file_name=f"{deck_name}.apkg",
+                                mime="application/octet-stream",
+                                use_container_width=True,
                             )
-                            # 7. Provide download
-                            with open(deck_file_path, "rb") as f:
-                                st.download_button(
-                                    label=f"Download {deck_name}.apkg",
-                                    data=f.read(),
-                                    file_name=f"{deck_name}.apkg",
-                                    mime="application/octet-stream",
-                                    use_container_width=True,
-                                )
-                        else:
-                            st.error(
-                                "Deck generation finished, but no .apkg file was found."
-                            )
+                    else:
+                        st.error(
+                            "Deck generation finished, but no .apkg file was found."
+                        )
 
-                except Exception as e:
-                    logger.critical(f"An error occurred during deck generation: {e}")
-                    st.error(f"An unexpected error occurred: {e}")
-                    # Clean up temp file on error too
-                    if "temp_config_file" in locals() and temp_config_file.exists():
-                        temp_config_file.unlink()
+            except Exception as e:
+                # This will still catch the error you saw, but now
+                # we know it's not a simple config error.
+                logger.critical(f"An error occurred during deck generation: {e}")
+                st.error(f"An unexpected error occurred: {e}")
+                # Clean up temp file on error too
+                if "temp_config_file" in locals() and temp_config_file.exists():
+                    temp_config_file.unlink()

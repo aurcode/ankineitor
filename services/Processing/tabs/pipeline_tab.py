@@ -94,7 +94,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
         st.dataframe(df_results)
 
         # Provide download button
-        csv = df_results.to_csv(index=False).encode("utf-8")
+        csv = df_results.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             label="Download results as CSV",
             data=csv,

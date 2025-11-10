@@ -29,6 +29,7 @@ class TagRule(BaseModel):
     column: Optional[str] = None
     split_by: Optional[str] = None
     static_tags: Optional[List[str]] = None
+    strip_chars: Optional[str] = None
 
 
 class AnkiConfig(BaseModel):

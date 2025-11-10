@@ -1,87 +1,79 @@
-Run with Docker Compose
-```
-docker-compose up --build
-```
+# Ankineitor 🤖
 
-localhost:8000/docs
+Ankineitor is a powerful, configurable tool designed to automate the creation of Anki flashcard decks, primarily for language learning. It transforms a simple list of words into a rich, multimedia Anki deck, complete with translations, Pinyin, audio, and AI-generated example sentences.
 
-Next format
-```
-{
-  "dataframe": [
-    {
-      "Title": "What is photosynthesis?",
-      "Desc": "Is the process by which plants, algae, and some bacteria convert light energy into chemical energy stored in glucose. It involves the absorption of light by chlorophyll, the utilization of carbon dioxide, and the production of oxygen as a byproduct."
-    },
-    {
-      "Title": "What is Mitosis",
-      "Desc": "Is a type of cell division in which a single cell divides to produce two identical daughter cells. This process is crucial for growth, development, and repair in multicellular organisms."
-    }
-  ],
-  "config": {
-    "basics": {
-      "id": 123456789,
-      "deck_title": "First Deck",
-      "model_name": "Basic Model",
-      "filename": "first_deck.apkg",
-      "note_type": "reading"
-    },
-    "model_fields": [
-      {"name": "Title"},
-      {"name": "Desc"}
-    ],
-    "model_templates": {
-      "main": [
-        {
-          "name": "Basic Card",
-          "qfmt": "{{Title}}",
-          "afmt": "{{FrontSide}}<br/>{{Desc}}"
-        },
-        {
-          "name": "Reverse Card",
-          "qfmt": "{{Desc}}",
-          "afmt": "{{FrontSide}}<br/>{{Desc}}"
-        }
-      ],
-      "css": ".card { font-family: Arial; font-size: 20px; }"
-    },
-    "model_builder": ["Title", "Desc"]
-  }
-}
-```
+The application is built with a Streamlit web interface, providing a user-friendly control panel to manage the entire data processing and deck generation pipeline.
 
-For audios and images
-```
-{
-  "dataframe": [
-    {
-      "image_front": "/opt/input/image1.jpg",
-      "image_back": "/opt/input/image2.jpg",
-      "audio": "/opt/input/audio.mp3"
-    }
-  ],
-  "config": {
-    "basics": {
-        "id": "123456",
-        "deck_title": "Image to Image",
-        "model_name": "image_image",
-        "filename": "images.apkg",
-        "note_type": "study"
-    },
-    "model_fields": [
-        {"name": "ImageFront"},
-        {"name": "ImageBack"},
-        {"name": "Audio"}
-    ],
-    "model_templates": {
-        "main": [
-            {"name": "Recognition Card",
-             "qfmt": "<img src=\"{{ImageFront}}\">",
-             "afmt": "{{Audio}}<br/>{{FrontSide}}<hr id=\"answer\">{{ImageBack}}"}
-        ],
-        "css": " "
-    },
-    "model_builder": ["image_front", "image_back","audio"]
-  }
-}
-```
+## ✨ Features
+
+- **Automated Anki Deck Creation**: Generates `.apkg` files that can be directly imported into Anki.
+- **Configurable Pipeline**: Customize the data transformations to fit your learning needs.
+- **Multimedia Enrichment**: Automatically adds audio pronunciations, translations, and Pinyin to your flashcards.
+- **LLM Integration**: Leverages Large Language Models (LLMs) to generate meaningful example sentences and detailed explanations for vocabulary.
+- **Efficient Caching**: Uses a database to cache processed words, so you only process new vocabulary, saving time and resources.
+- **User-Friendly Web Interface**: A Streamlit-based control panel makes it easy to run the pipeline and generate decks.
+- **Dockerized**: Includes `docker-compose.yml` for easy setup and deployment.
+
+## ⚙️ How It Works
+
+The project is structured as a data processing pipeline with a web interface.
+
+1.  **Input**: You provide a list of words through the Streamlit UI.
+2.  **Processing Pipeline**: The application processes each word through a series of transformations:
+    - **Pinyin Transformation**: Generates the Pinyin for Chinese characters.
+    - **Translation Transformation**: Translates words into a target language (e.g., Spanish).
+    - **Audio Transformation**: Creates audio files for pronunciation.
+    - **LLM Transformation**: Uses an LLM to generate example sentences and other contextual information.
+3.  **Deck Generation**: The processed data is then used to generate an Anki deck (`.apkg` file) based on a flexible YAML configuration that defines the card structure, fields, and styling.
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- [Docker](https://www.docker.com/get-started) and [Docker Compose](https://docs.docker.com/compose/install/)
+- Python 3.8+
+
+### Installation
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/aurcode/ankineitor.git
+    cd ankineitor
+    ```
+
+2.  **Set up the environment:**
+    You can run the application using Docker Compose, which is the recommended method.
+
+    ```bash
+    docker-compose up --build
+    ```
+    This will build the Docker image and start the Streamlit application.
+
+3.  **Access the application:**
+    Open your web browser and navigate to `http://localhost:8501`.
+
+### Usage
+
+1.  **Run the Pipeline**:
+    - Navigate to the **"🚀 Run Pipeline"** tab.
+    - Enter the words you want to process.
+    - The pipeline will run, and the results will be cached.
+
+2.  **Generate the Anki Deck**:
+    - Go to the **"🤖 Anki Deck Generator"** tab.
+    - Configure your deck settings.
+    - Click the generate button to create the `.apkg` file.
+
+3.  **Import into Anki**:
+    - Download the generated `.apkg` file.
+    - Open Anki and go to `File > Import` to add the new deck to your collection.
+
+## 🔧 Configuration
+
+The core of the deck generation is controlled by `services/Processing/config.yaml`. This file allows you to define:
+- The Anki card model (fields, templates).
+- CSS styling for your cards.
+- How media files (audio, images) are handled.
+- Rules for generating tags.
+
+By modifying this file, you can create highly customized Anki decks tailored to your specific learning style.

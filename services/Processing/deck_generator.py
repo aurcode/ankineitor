@@ -32,6 +32,7 @@ class DeckGenerator:
         try:
             with self.config_path.open("r", encoding="utf-8") as f:
                 config_data = yaml.safe_load(f)
+            self.raw_config_data = config_data
             self.config = AnkiConfig.parse_obj(config_data)
             logger.success("Configuration loaded and validated successfully.")
         except FileNotFoundError:
@@ -46,12 +47,46 @@ class DeckGenerator:
     def _create_model(self, select_model: str = "main") -> genanki.Model:
         """Create an Anki model based on the validated configuration."""
         logger.info("Creating Anki model.")
+
+        # --- START REPLACEMENT CODE ---
+
+        # Use Pydantic for simple, validated values
+        model_id = self.config.basics.model_id
+        model_name = self.config.basics.model_name
+
+        # Use the RAW dictionary for complex lists/dicts that genanki needs
+        try:
+            raw_fields = self.raw_config_data["model_fields"]
+            raw_templates = self.raw_config_data["model_templates"][select_model]
+            raw_css = self.raw_config_data["model_templates"]["css"]
+        except KeyError as e:
+            logger.critical(
+                f"Config file {self.config_path} is missing required key: {e}"
+            )
+            raise
+        except TypeError as e:
+            logger.critical(
+                f"Config file structure is corrupt. 'model_templates' is likely not a dict. Error: {e}"
+            )
+            raise
+
+        # Add defense against the 'int' error
+        if not isinstance(raw_fields, list):
+            logger.critical(
+                f"'model_fields' in config is not a list. Got: {type(raw_fields)}"
+            )
+            raise TypeError(
+                f"'model_fields' must be a list, but got {type(raw_fields)}"
+            )
+
+        logger.info(f"Passing {len(raw_fields)} fields to genanki.Model")
+
         return genanki.Model(
-            self.config.basics.model_id,
-            self.config.basics.model_name,
-            fields=self.config.model_fields,
-            templates=self.config.model_templates[select_model],
-            css=self.config.model_templates["css"],
+            model_id,
+            model_name,
+            fields=raw_fields,
+            templates=raw_templates,
+            css=raw_css,
         )
 
     def _collect_media_files(self, df: pd.DataFrame, strict: bool = False) -> Set[Path]:
@@ -137,18 +172,28 @@ class DeckGenerator:
 
             if rule.column and rule.column in card and pd.notna(card[rule.column]):
                 content = str(card[rule.column])
-                prefix = f"{rule.prefix}:" if rule.prefix else ""
+                prefix = (
+                    f"{rule.prefix}::" if rule.prefix else ""
+                )  # Use :: for hierarchical tags
+
+                # NEW: Clean the content *before* splitting
+                if rule.strip_chars:
+                    content = content.strip(rule.strip_chars)
 
                 if rule.split_by:
-                    items = [i.strip() for i in content.split(rule.split_by)]
+                    items = [
+                        i.strip() for i in content.split(rule.split_by) if i.strip()
+                    ]
                     tags.extend([f"{prefix}{item}" for item in items])
-                else:
+                elif content:  # Only add if content isn't empty after stripping
                     tags.append(f"{prefix}{content}")
-        return tags
+
+        # Return a list of unique, non-empty tags
+        return sorted(list(set(filter(None, tags))))
 
     def _build_fields(self, card: pd.Series) -> List[str]:
         """Build fields for an Anki note based on card data."""
-        return [str(card.get(field, "")) for field in self.config.model_builder]
+        return [str(card.get(field) or "") for field in self.config.model_builder]
 
     def _create_note(self, card_data: pd.Series) -> Optional[genanki.Note]:
         """Create an Anki note from a row of the DataFrame, skipping if essential fields are empty."""
