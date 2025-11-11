@@ -3,15 +3,15 @@ import os
 from loguru import logger
 
 # --- Core App Dependencies ---
-from db_client import SQLAlchemyClient
-from audio_creator import AudioCreator
-from transformations import (
+from ankineitor.pipeline.db_client import SQLAlchemyClient
+from ankineitor.pipeline.audio_creator import AudioCreator
+from ankineitor.pipeline.transformations import (
     PinyinTransformation,
     TranslationTransformation,
     AudioTransformation,
     TimestampTransformation,
 )
-from llm_transformation import LLMTransformation
+from ankineitor.pipeline.llm_transformation import LLMTransformation
 
 # --- Tab Imports ---
 # Import the render functions from their new files
@@ -21,7 +21,6 @@ from tabs.merge_csv_tab import render_merge_csv_tab
 # --- Anki Tab (Mandatory) ---
 # We now import this directly. If DeckGenerator or the tab
 # file is missing, the app will fail, as expected.
-from deck_generator import DeckGenerator
 from tabs.anki_tab import render_anki_tab
 
 
@@ -47,8 +46,8 @@ def get_dependencies():
     """
     logger.info("Initializing dependencies (DBs, AudioCreator)...")
     try:
-        pipeline_db = SQLAlchemyClient(db_path="ankineitor_pipeline.db")
-        llm_db = SQLAlchemyClient(db_path="ankineitor_llm_cache.db")
+        pipeline_db = SQLAlchemyClient(db_path="data/ankineitor_pipeline.db")
+        llm_db = SQLAlchemyClient(db_path="data/ankineitor_llm_cache.db")
         audio_creator = AudioCreator(folder_name="./my_audio_files")
 
         # This dictionary holds all possible transformations

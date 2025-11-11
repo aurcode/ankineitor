@@ -3,7 +3,7 @@ import pandas as pd
 from loguru import logger
 
 # Import only the data utils
-from data_utils import DataFrameUtils
+from ankineitor.common.data_utils import DataFrameUtils
 
 
 def render_merge_csv_tab():

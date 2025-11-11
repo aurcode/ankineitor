@@ -4,9 +4,6 @@ import yaml
 from pathlib import Path
 from loguru import logger
 
-# Import DeckGenerator
-from deck_generator import DeckGenerator
-
 # --- Default Anki Configs (from your example) ---
 # This is the "basic" setup
 DEFAULT_MODEL_TEMPLATES_YAML = """
@@ -186,6 +183,8 @@ def render_anki_tab():
     """
     Renders the 'Anki Deck Generator' tab.
     """
+    from deck_generator import DeckGenerator
+
     st.header("Anki Deck Generator")
 
     # --- Initialize Session State for Config ---

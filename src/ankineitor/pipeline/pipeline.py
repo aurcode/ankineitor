@@ -1,10 +1,10 @@
-# Assume SQLAlchemyClient is in a file named `db_client.py`
-from db_client import SQLAlchemyClient
+from .transformations import Transformation
+from .db_client import SQLAlchemyClient
+
 from typing import List, Optional
 from loguru import logger
-import pandas as pd
-from transformations import Transformation
 from tqdm import tqdm
+import pandas as pd
 
 # Import LLMTransformation to check its type
 try:

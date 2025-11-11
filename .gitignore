@@ -1,4 +1,8 @@
 # Custom
+*.db
+**/*.mp3
+*.sqlite
+*.csv
 *.csv
 *.pdf
 history/

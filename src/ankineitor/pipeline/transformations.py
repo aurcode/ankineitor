@@ -4,7 +4,7 @@ import pandas as pd
 from deep_translator import GoogleTranslator
 from datetime import datetime
 from abc import ABC, abstractmethod
-from audio_creator import AudioCreator
+from .audio_creator import AudioCreator
 from loguru import logger
 from tqdm import tqdm
 

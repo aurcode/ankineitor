@@ -3,7 +3,7 @@ import pandas as pd
 from loguru import logger
 
 # Import only the pipeline-specific dependencies
-from pipeline import TransformationPipeline
+from ankineitor.pipeline import TransformationPipeline
 
 
 def render_pipeline_tab(pipeline_db_client, all_transformations):

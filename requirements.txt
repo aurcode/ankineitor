@@ -12,3 +12,9 @@ PyPDF2
 python-pptx
 tabulate
 loguru
+
+genanki
+loguru
+pandas
+PyYAML
+pydantic

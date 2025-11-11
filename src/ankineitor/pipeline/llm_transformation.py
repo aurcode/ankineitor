@@ -19,11 +19,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
-# Import the base class for inheritance
-from transformations import Transformation
-
-# Import the client, but we will type hint it generically
-from db_client import SQLAlchemyClient
+# Import Transformation base class
+from .transformations import Transformation
+from .db_client import SQLAlchemyClient
 
 # Load environment variables
 load_dotenv()
