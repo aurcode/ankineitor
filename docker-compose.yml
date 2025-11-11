@@ -1,39 +1,17 @@
-services:
-  api:
-    build:
-      context: ./app
-    ports:
-      - "8000:8000"
-    volumes:
-      - ${AUDIO_PATH}:/opt/audio
-      - ${ANKIFILE}:/opt/output
-      - ${INPUT_PATH}:/opt/input
-      - ${DATAFRAME_SAVE_PATH}:/opt/df
-#    depends_on:
-#      - mongodb
-    env_file:
-      - .env
+version: "3.8"
 
-  streamlit:
+services:
+  app:
     build:
-      context: ./streamlit
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8501:8501"
-    depends_on:
-      - api
-#      - mongodb
-    env_file:
-      - .env
-#
-#  mongodb:
-#    image: mongo:latest
-#    container_name: mongodb
-#    ports:
-#      - "27017:27017"  # Map MongoDB port to the host
-#    volumes:
-#      - ${MONGO_DATA_PATH}:/data/db  # Persist data between container restarts
-#    env_file:
-#      - .env  # Load environment variables from the .env file
-#
-#volumes:
-#  mongodb_data:
+    volumes:
+      - ./data:/app/data
+      - ./media:/app/media
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./my_audio_files:/app/my_audio_files
+    environment:
+      - PYTHONUNBUFFERED=1

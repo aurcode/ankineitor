@@ -1,24 +1,40 @@
-# Use an official Python runtime as a parent image
-FROM python:3.9-slim
+# Stage 1: Build stage
+FROM python:3.9-slim AS builder
 
-# Set the working directory in the container
+# Set working directory
 WORKDIR /app
 
-# Copy the requirements file into the container at /app
-COPY requirements.txt .
+# Install build dependencies if any (e.g., for compiling packages)
+# For now, we just need pip to be up-to-date
+RUN pip install --upgrade pip
 
-# Install any needed packages specified in requirements.txt
+# Copy only the files necessary for installing dependencies
+# This optimizes Docker's layer caching.
+COPY requirements.txt pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application's code into the container
-COPY . .
+# Stage 2: Final stage
+FROM python:3.9-slim
 
-# Define volumes for persistent data and media
-# This allows you to mount local directories into the container
-VOLUME /app/data
-VOLUME /app/media
-VOLUME /app/output
+# Create a non-root user and group
+RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Run main.py when the container launches
-# This will be the main entry point for the deck generation process
-CMD ["python", "main.py"]
+# Set the working directory
+WORKDIR /app
+
+# Copy installed packages from the builder stage
+COPY --from=builder /usr/local/lib/python3.9/site-packages/ /usr/local/lib/python3.9/site-packages/
+
+# Copy the application code
+COPY app/ ./app/
+COPY src/ ./src/
+
+# Set ownership of the app directory
+RUN chown -R appuser:appuser /app
+
+# Switch to the non-root user
+USER appuser
+
+# Set the command to run the application
+# The app is a streamlit app
+CMD ["streamlit", "run", "app/app.py"]
