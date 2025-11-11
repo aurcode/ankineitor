@@ -8,7 +8,7 @@ import pandas as pd
 
 # Import LLMTransformation to check its type
 try:
-    from llm_transformation import LLMTransformation
+    from .llm_transformation import LLMTransformation
 except ImportError:
     # Handle case where llm_transformation might not exist
     LLMTransformation = None

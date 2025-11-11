@@ -12,6 +12,7 @@ RUN pip install --upgrade pip
 # This optimizes Docker's layer caching.
 COPY requirements.txt pyproject.toml ./
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install python-dotenv
 
 # Stage 2: Final stage
 FROM python:3.9-slim
@@ -22,12 +23,17 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 # Set the working directory
 WORKDIR /app
 
-# Copy installed packages from the builder stage
+# Copy installed packages and executables from the builder stage
 COPY --from=builder /usr/local/lib/python3.9/site-packages/ /usr/local/lib/python3.9/site-packages/
+COPY --from=builder /usr/local/bin/ /usr/local/bin/
 
 # Copy the application code
 COPY app/ ./app/
 COPY src/ ./src/
+COPY pyproject.toml ./
+
+# Install the local package
+RUN pip install .
 
 # Set ownership of the app directory
 RUN chown -R appuser:appuser /app
@@ -37,4 +43,4 @@ USER appuser
 
 # Set the command to run the application
 # The app is a streamlit app
-CMD ["streamlit", "run", "app/app.py"]
+CMD ["streamlit", "run", "app/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
