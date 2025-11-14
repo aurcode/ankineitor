@@ -77,25 +77,45 @@ class TextExtractor:
         """
         logger.info(f"Extracting content from {len(self.uploaded_files)} file(s)...")
 
-        # Use a set to avoid duplicate phrases
-        cleaned_phrases: Set[str] = set()
+        # --- Handle Pasted Text Directly ---
+        # If the only input is pasted text, process it without chunking/filtering.
+        if list(self.uploaded_files.keys()) == ["pasted_text.txt"]:
+            pasted_content = self.uploaded_files["pasted_text.txt"].decode("utf-8").strip()
+            if self.chinese_regex.search(pasted_content):
+                self.text = pasted_content
+                self.phrases = [pasted_content]
+                logger.info("Content extracted directly from pasted text.")
+                return  # Skip file-based extraction
+            else:
+                logger.warning("Pasted text contains no Chinese characters.")
+                return
 
-        # Set partition strategy for testing/dev mode
+        # --- Handle File Uploads ---
+        cleaned_phrases: Set[str] = set()
         strategy = "hi_res" if self.dev_enabled else "auto"
 
         for file_name, file_content in self.uploaded_files.items():
             logger.debug(f"Partitioning file: {file_name} with strategy '{strategy}'")
             try:
-                file_io = io.BytesIO(file_content)
+                file_extension = os.path.splitext(file_name)[1].lower()
 
-                # Use 'partition' to handle any file type (PDF, PPTX, TXT, etc.)
-                elements = partition(
-                    file=file_io,
-                    file_filename=file_name,
-                    strategy=strategy,
-                    # For dev mode, 'hi_res' strategy respects max_pages
-                    max_pages=3 if self.dev_enabled else None,
-                )
+                # Handle text files by decoding them first
+                if file_extension == ".txt":
+                    elements = partition(
+                        text=file_content.decode("utf-8"),
+                        file_filename=file_name,
+                        strategy=strategy,
+                    )
+                # Handle binary files (PDF, DOCX, etc.) with a file-like object
+                else:
+                    file_io = io.BytesIO(file_content)
+                    elements = partition(
+                        file=file_io,
+                        file_filename=file_name,
+                        strategy=strategy,
+                        # For dev mode, 'hi_res' strategy respects max_pages
+                        max_pages=3 if self.dev_enabled else None,
+                    )
 
                 for el in elements:
                     # Skip junk elements

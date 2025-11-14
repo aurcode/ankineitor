@@ -5,6 +5,7 @@ from typing import List
 from dotenv import load_dotenv
 from tabulate import tabulate
 from loguru import logger
+from typing import List, Dict
 
 # Load environment variables
 load_dotenv()
@@ -132,42 +133,59 @@ class DataFrameUtils:
     def filter_dataframe(
         df: pd.DataFrame, filters: dict, filter_column_name: str
     ) -> pd.DataFrame:
-        """Filter a DataFrame using the provided filters dictionary and return two DataFrames:
-        one with the filtered data and another with the excluded data.
+        """
+        Filter a DataFrame using a dictionary of filters.
+
+        Returns a tuple of two DataFrames:
+        1.  remaining_df: Rows from the original df that were NOT in any filter.
+        2.  removed_df: Rows that WERE found in the filters, with an added
+            'hsk_level' column indicating which filter they matched.
         """
         try:
-            # Log the initial state of the DataFrame and filters
             logger.debug(f"Initial DataFrame shape: {df.shape}")
-            logger.debug(
-                f"Filter column: {filter_column_name}, Filters: {filters.keys()}"
-            )
+            logger.debug(f"Filter column: {filter_column_name}, Filters applied: {list(filters.keys())}")
 
-            # Combine all filter values into a single set
-            allowed_values = set()
-            for filter_data in filters.values():
-                allowed_values.update(filter_data["hanzi"])
-
-            # Ensure the filter column exists
             if filter_column_name not in df.columns:
                 raise KeyError(f"Column '{filter_column_name}' not found in DataFrame.")
 
-            # Filter the DataFrame
-            filtered_df = df[df[filter_column_name].isin(allowed_values)]
-            excluded_df = df[~df[filter_column_name].isin(allowed_values)]
+            remaining_df = df.copy()
+            removed_chunks = []
 
-            # Log the resulting shapes
+            # Iterate through each HSK filter provided
+            for level, filter_df in filters.items():
+                if "hanzi" not in filter_df.columns:
+                    logger.warning(f"Filter '{level}' is missing 'hanzi' column, skipping.")
+                    continue
+
+                # Get the set of words for the current HSK level
+                hsk_words = set(filter_df["hanzi"])
+
+                # Find which rows in the *currently remaining* df match this HSK level
+                is_in_level = remaining_df[filter_column_name].isin(hsk_words)
+                
+                if is_in_level.any():
+                    # Extract the rows to be removed
+                    removed_chunk = remaining_df[is_in_level].copy()
+                    removed_chunk["hsk_level"] = level.upper()  # Add the new column
+                    removed_chunks.append(removed_chunk)
+
+                    # Update remaining_df by keeping only the non-matching rows
+                    remaining_df = remaining_df[~is_in_level]
+
+            # Combine all removed chunks into a single DataFrame
+            if removed_chunks:
+                removed_df = pd.concat(removed_chunks, ignore_index=True)
+            else:
+                removed_df = pd.DataFrame(columns=list(df.columns) + ["hsk_level"])
+
             logger.info(
-                f"DataFrame filtered successfully. Filtered shape: {filtered_df.shape}, Excluded shape: {excluded_df.shape}"
+                f"DataFrame filtered. Remaining shape: {remaining_df.shape}, Removed shape: {removed_df.shape}"
             )
-            return excluded_df, filtered_df
+            return remaining_df, removed_df
+
         except Exception as e:
             logger.error(f"Error filtering DataFrame: {e}")
             raise
-
-
-# NOTE: Removed HSKDataFetcher as it relies on external URLs.
-# You can add this back if needed for the app.
-# class HSKDataFetcher: ...
 
 
 class DataUtils:
@@ -222,10 +240,6 @@ class DataUtils:
     def filter_dataframe(cls, df: pd.DataFrame, filters: dict, filter_column_name: str):
         """Filter the DataFrame with given filters."""
         return DataFrameUtils.filter_dataframe(df, filters, filter_column_name)
-
-    # NOTE: Removed fetch_hsk_files
-    # @classmethod
-    # def fetch_hsk_files(cls): ...
 
     @classmethod
     def read_csv(cls, file_path: str) -> pd.DataFrame:

@@ -17,6 +17,7 @@ from ankineitor.pipeline.llm_transformation import LLMTransformation
 # Import the render functions from their new files
 from tabs.pipeline_tab import render_pipeline_tab
 from tabs.merge_csv_tab import render_merge_csv_tab
+from tabs.word_extractor_tab import word_extractor_tab
 
 # --- Anki Tab (Mandatory) ---
 # We now import this directly. If DeckGenerator or the tab
@@ -81,11 +82,11 @@ if not pipeline_db_client or not all_transformations:
     st.error("Application cannot start. Dependencies failed to load.")
 else:
     # --- Tab Creation ---
-    # The Anki tab is now mandatory
     tab_list = [
         "🤖Anki Deck Generator",
         "🚀 Run Pipeline",
         "📊 Merge CSVs",
+        "🔠 Word Extractor",
     ]
 
     tabs = st.tabs(tab_list)
@@ -98,6 +99,10 @@ else:
     with tabs[1]:
         render_pipeline_tab(pipeline_db_client, all_transformations)
 
-    # --- Render Tab 3 (Mandatory) ---
+    # --- Render Tab 3 ---
     with tabs[2]:
         render_merge_csv_tab()
+
+    # --- Render Tab 4 ---
+    with tabs[3]:
+        word_extractor_tab()
