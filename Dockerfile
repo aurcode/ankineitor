@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Stage 2: Final stage
 FROM python:3.9-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's/deb.debian.org/httpredir.debian.org/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     poppler-utils \
     tesseract-ocr \
