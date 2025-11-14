@@ -17,6 +17,12 @@ RUN pip install python-dotenv
 # Stage 2: Final stage
 FROM python:3.9-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    poppler-utils \
+    tesseract-ocr \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Create a non-root user and group
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
@@ -35,11 +41,21 @@ COPY pyproject.toml ./
 # Install the local package
 RUN pip install .
 
+# Create and set ownership for the logs directory
+RUN mkdir -p /app/logs && chown -R appuser:appuser /app/logs
+
 # Set ownership of the app directory
 RUN chown -R appuser:appuser /app
 
+# Copy the entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Switch to the non-root user
 USER appuser
+
+# Set the entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Set the command to run the application
 # The app is a streamlit app

@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8501:8501"
+      - "8505:8501"
     volumes:
       - ./data:/app/data
       - ./media:/app/media
