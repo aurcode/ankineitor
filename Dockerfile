@@ -1,5 +1,5 @@
 # Stage 1: Build stage
-FROM python:3.9-slim AS builder
+FROM python:3.9-bullseye AS builder
 
 # Set working directory
 WORKDIR /app
@@ -14,10 +14,9 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Final stage
-FROM python:3.9-slim
+FROM python:3.9-bullseye
 
-RUN sed -i 's/deb.debian.org/httpredir.debian.org/g' /etc/apt/sources.list.d/debian.sources && \
-    apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     poppler-utils \
     tesseract-ocr \
@@ -29,6 +28,7 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 # Set the working directory
 WORKDIR /app
+ENV HOME=/app
 
 # Copy installed packages and executables from the builder stage
 COPY --from=builder /usr/local/lib/python3.9/site-packages/ /usr/local/lib/python3.9/site-packages/
