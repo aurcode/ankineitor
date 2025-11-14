@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     poppler-utils \
     tesseract-ocr \
+    gosu \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user and group
@@ -41,18 +42,12 @@ COPY pyproject.toml ./
 # Install the local package
 RUN pip install .
 
-# Create and set ownership for the logs directory
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app/logs
-
 # Set ownership of the app directory
 RUN chown -R appuser:appuser /app
 
-# Copy the entrypoint script
+# Copy the entrypoint script and make it executable
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-
-# Switch to the non-root user
-USER appuser
 
 # Set the entrypoint
 ENTRYPOINT ["/entrypoint.sh"]
