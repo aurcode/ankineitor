@@ -14,3 +14,4 @@ streamlit
 sqlalchemy
 unstructured[all-docs]
 langchain_groq
+python-dotenv

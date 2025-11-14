@@ -10,9 +10,8 @@ RUN pip install --upgrade pip
 
 # Copy only the files necessary for installing dependencies
 # This optimizes Docker's layer caching.
-COPY requirements.txt pyproject.toml ./
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install python-dotenv
 
 # Stage 2: Final stage
 FROM python:3.9-slim
