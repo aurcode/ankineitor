@@ -3,8 +3,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "8505:8501"
     volumes:
       - ./data:/app/data
       - ./media:/app/media
@@ -14,3 +12,26 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    networks:
+      - internal_network
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal_network
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal_network:
+    driver: bridge
