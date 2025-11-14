@@ -42,6 +42,10 @@ COPY pyproject.toml ./
 # Install the local package
 RUN pip install .
 
+# Create a temporary directory for unstructured and set TMPDIR
+RUN mkdir /app/tmp
+ENV TMPDIR=/app/tmp
+
 # Set ownership of the app directory
 RUN chown -R appuser:appuser /app
 

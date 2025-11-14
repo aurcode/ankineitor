@@ -50,7 +50,7 @@ class PinyinTransformation(Transformation):
 class TranslationTransformation(Transformation):
     """Adds a 'translation' column."""
 
-    def __init__(self, lan_in: str = "zh-CN", lan_out: str = "es"):
+    def __init__(self, lan_in: str = "zh-CN", lan_out: str = "en"):
         self.translator = GoogleTranslator(source=lan_in, target=lan_out)
         logger.info(f"Translation_Transformation initialized: {lan_in} -> {lan_out}")
 
@@ -61,14 +61,12 @@ class TranslationTransformation(Transformation):
     def _translate_with_extras(self, word: str) -> str:
         """Helper to combine Google Translate with CEDICT."""
         try:
-            translation = self.translator.translate(word)
             extra_meanings = pinyin.cedict.translate_word(word)
 
             if extra_meanings:
                 # Add extra meanings, ensuring no duplicates
-                extras = " | ".join(set(extra_meanings))
-                return f"{translation}. Extras: {extras}"
-            return translation
+                return " | ".join(set(extra_meanings))
+            return self.translator.translate(word)
         except Exception as e:
             logger.error(f"Error translating word '{word}': {e}")
             return None
