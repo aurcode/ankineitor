@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field
 # Import Transformation base class
 from .transformations import Transformation
 from .db_client import SQLAlchemyClient
+from ..config import get_settings
+from ..security.exceptions import ValidationError
 
 # Load environment variables
 load_dotenv()
@@ -75,16 +77,27 @@ class LLMTransformation(Transformation):
         self.table_name = table_name
         self.field_name = "word"
         self.max_retries = max_retries
-        self.api_key = api_key or os.getenv("GROQ_API_KEY")
+        
+        # Use secure configuration management
+        settings = get_settings()
+        self.api_key = api_key or settings.groq_api_key
 
         if not self.api_key:
-            logger.warning("GROQ_API_KEY not found in environment. Hardcoding key.")
-            self.api_key = "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"
+            logger.error("GROQ_API_KEY not found in environment or configuration")
+            raise ValidationError(
+                "Groq API key is required. Please set GROQ_API_KEY environment variable "
+                "or provide api_key parameter."
+            )
+
+        # Validate API key format
+        if not self.api_key.startswith("gsk_"):
+            logger.error("Invalid Groq API key format")
+            raise ValidationError("Invalid Groq API key format. Must start with 'gsk_'")
 
         # 1. Initialize Groq Chat Model
         self.llm = ChatGroq(
             api_key=self.api_key,
-            model="llama-3.3-70b-versatile",  # Updated model
+            model=settings.llm_model,  # Use configurable model
         )
 
         # 2. Setup Chain for Example Sentences

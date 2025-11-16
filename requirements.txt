@@ -10,6 +10,7 @@ tabulate
 loguru
 PyYAML
 pydantic
+pydantic-settings
 streamlit
 sqlalchemy
 unstructured[all-docs]

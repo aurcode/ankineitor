@@ -1,0 +1,36 @@
+# Test dependencies for Ankineitor
+
+# Core testing framework
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+
+# Additional testing utilities
+pytest-xdist>=3.0.0          # Parallel test execution
+pytest-timeout>=2.1.0        # Test timeout handling
+pytest-html>=3.1.0           # HTML test reports
+pytest-benchmark>=4.0.0      # Performance benchmarking
+
+# Security testing
+bandit>=1.7.0                # Security linting
+safety>=2.3.0                # Dependency vulnerability scanning
+
+# Code quality
+black>=22.0.0                # Code formatting
+flake8>=5.0.0                # Code linting
+mypy>=0.991                  # Type checking
+isort>=5.10.0                # Import sorting
+
+# Documentation
+sphinx>=5.0.0                # Documentation generation
+sphinx-rtd-theme>=1.0.0      # Read the Docs theme
+
+# Coverage reporting
+coverage>=6.0.0              # Code coverage
+codecov>=2.1.0               # Coverage reporting
+
+# Mocking and testing utilities
+faker>=15.0.0                # Generate fake data
+factory-boy>=3.2.0           # Test data factories
+freezegun>=1.2.0             # Time mocking
+responses>=0.22.0            # HTTP request mocking

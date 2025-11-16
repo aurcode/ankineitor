@@ -4,6 +4,7 @@ from loguru import logger
 
 # Import only the pipeline-specific dependencies
 from ankineitor.pipeline import TransformationPipeline
+from ankineitor.security import validate_word_input, ValidationError
 
 
 def render_pipeline_tab(pipeline_db_client, all_transformations):
@@ -42,6 +43,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
             "Enter words (one per line):",
             "你好\n谢谢\n熊猫\n数据",
             height=200,
+            help="Enter Chinese words, one per line. Maximum 1000 words.",
         )
 
     st.divider()
@@ -53,10 +55,13 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
             st.warning("Please input at least one word.")
         else:
             try:
-                # Parse words from text area
-                words_to_process = [
-                    word.strip() for word in word_input.split("\n") if word.strip()
-                ]
+                # Validate and sanitize word input
+                words_to_process = validate_word_input(word_input)
+                
+                # Limit processing to prevent abuse
+                if len(words_to_process) > 1000:
+                    st.warning(f"Limiting processing to first 1000 words (you provided {len(words_to_process)})")
+                    words_to_process = words_to_process[:1000]
 
                 with st.spinner(f"Processing {len(words_to_process)} words..."):
                     logger.info(
@@ -80,6 +85,11 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
                 # Store results in session state to add category
                 st.session_state.df_results = df_results
 
+            except ValidationError as e:
+                logger.error(f"Validation error during pipeline run: {e}")
+                st.error(f"Input validation error: {e}")
+                if "df_results" in st.session_state:
+                    del st.session_state.df_results
             except Exception as e:
                 logger.error(f"Error during pipeline run: {e}")
                 st.error(f"An error occurred: {e}")
@@ -113,11 +123,19 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
             """
         )
 
-        category_name = st.text_input("Enter a category for these words:")
+        category_name = st.text_input(
+            "Enter a category for these words:",
+            max_chars=50,
+            help="Category name (max 50 characters)"
+        )
 
         if st.button("Add Category to DB", use_container_width=True):
             if not category_name:
                 st.warning("Please enter a category name.")
+            elif len(category_name.strip()) < 2:
+                st.warning("Category name must be at least 2 characters long.")
+            elif not re.match(r'^[a-zA-Z0-9_\-\s]+$', category_name):
+                st.warning("Category name contains invalid characters. Use only letters, numbers, spaces, hyphens, and underscores.")
             else:
                 try:
                     with st.spinner(f"Adding category '{category_name}'..."):
@@ -129,7 +147,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
                         )
 
                         df_categorized = pipeline.transform_categories(
-                            df_results, category=category_name
+                            df_results, category=category_name.strip()
                         )
 
                     st.success(
