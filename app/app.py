@@ -12,6 +12,7 @@ from ankineitor.pipeline.transformations import (
     TimestampTransformation,
 )
 from ankineitor.pipeline.llm_transformation import LLMTransformation
+from ankineitor.pipeline.llm_audio_transformation import LLMAudioTransformation
 
 # --- Tab Imports ---
 # Import the render functions from their new files
@@ -52,6 +53,7 @@ def get_dependencies():
         audio_creator = AudioCreator(folder_name="./my_audio_files")
 
         # This dictionary holds all possible transformations
+        # Ordered logically: basic transformations first, then LLM, then audio for LLM sentences last
         all_transforms = {
             "Pinyin": PinyinTransformation(),
             "Translation (to ES)": TranslationTransformation(
@@ -60,6 +62,7 @@ def get_dependencies():
             "Audio": AudioTransformation(audio_creator=audio_creator),
             "Timestamp": TimestampTransformation(),
             "LLM (Meanings/Sentences)": LLMTransformation(db_client=llm_db),
+            "LLM Audio (Sentences)": LLMAudioTransformation(audio_creator=audio_creator),
         }
         logger.info("Dependencies initialized successfully.")
         return pipeline_db, all_transforms

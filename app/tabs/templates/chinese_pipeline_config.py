@@ -20,6 +20,9 @@ CHINESE_PIPELINE_SETUP = {
         {"name": "Example 1"},
         {"name": "Example 2"},
         {"name": "Example 3"},
+        {"name": "Example 1 Audio"},
+        {"name": "Example 2 Audio"},
+        {"name": "Example 3 Audio"},
         {"name": "Translation (Extras)"},
         {"name": "Categories"},
         {"name": "Timestamp"},
@@ -34,6 +37,9 @@ CHINESE_PIPELINE_SETUP = {
         {"csv_column": "sentence_1"},
         {"csv_column": "sentence_2"},
         {"csv_column": "sentence_3"},
+        {"csv_column": "sentence_1_audio"},
+        {"csv_column": "sentence_2_audio"},
+        {"csv_column": "sentence_3_audio"},
         {"csv_column": "translation"},
         {"csv_column": "categories"},
         {"csv_column": "timestamp"},
@@ -41,6 +47,9 @@ CHINESE_PIPELINE_SETUP = {
     # 3. Media Fields: Tells the generator which columns are files
     "media_fields": [
         {"column_name": "audio", "media_type": "audio"},
+        {"column_name": "sentence_1_audio", "media_type": "audio"},
+        {"column_name": "sentence_2_audio", "media_type": "audio"},
+        {"column_name": "sentence_3_audio", "media_type": "audio"},
     ],
     # 4. "Beautiful Template" (YAML for Templates + CSS)
     "model_templates_yaml": CHINESE_PIPELINE_MODEL_TEMPLATES_YAML,

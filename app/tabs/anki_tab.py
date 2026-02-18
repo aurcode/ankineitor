@@ -47,17 +47,20 @@ def render_anki_tab():
             ],
             # UPDATED: This now matches your pipeline output CSV by default
             "model_builder": [
-                {"csv_column": "Word"},  # Maps to Front
-                {"csv_column": "Definition"},  # Maps to Back
-                {"csv_column": "Sentence"},  # Maps to Example
-                {"csv_column": "Sound"},  # Maps to Audio
-                {"csv_column": "Picture"},  # Maps to Image (a non-existent col is fine)
-                {"csv_column": "Category"},  # Maps to Notes
+                {"csv_column": "word"},  # Maps to Front
+                {"csv_column": "translation"},  # Maps to Back
+                {"csv_column": "sentence_1"},  # Maps to Example
+                {"csv_column": "audio"},  # Maps to Audio
+                {"csv_column": "picture"},  # Maps to Image (a non-existent col is fine)
+                {"csv_column": "categories"},  # Maps to Notes
             ],
             # UPDATED: This now matches your pipeline output CSV by default
             "media_fields": [
-                {"column_name": "Sound", "media_type": "audio"},
-                {"column_name": "Picture", "media_type": "image"},
+                {"column_name": "audio", "media_type": "audio"},
+                {"column_name": "sentence_1_audio", "media_type": "audio"},
+                {"column_name": "sentence_2_audio", "media_type": "audio"},
+                {"column_name": "sentence_3_audio", "media_type": "audio"},
+                {"column_name": "picture", "media_type": "image"},
             ],
             "model_templates_yaml": DEFAULT_MODEL_TEMPLATES_YAML,
             "tag_rules_yaml": DEFAULT_TAG_RULES_YAML,  # This now uses the new default

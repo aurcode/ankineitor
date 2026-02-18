@@ -9,9 +9,11 @@ import pandas as pd
 # Import LLMTransformation to check its type
 try:
     from .llm_transformation import LLMTransformation
+    from .llm_audio_transformation import LLMAudioTransformation
 except ImportError:
     # Handle case where llm_transformation might not exist
     LLMTransformation = None
+    LLMAudioTransformation = None
 
 
 class TransformationPipeline:
@@ -39,22 +41,27 @@ class TransformationPipeline:
         self.main_transformations: List[Transformation] = []
         self.llm_transformations: List[Transformation] = []
 
-        if LLMTransformation:  # Check if class was imported
+        if LLMTransformation or LLMAudioTransformation:  # Check if LLM classes were imported
             for t in transformations:
-                if isinstance(t, LLMTransformation):
+                if isinstance(t, LLMTransformation) or isinstance(t, LLMAudioTransformation):
                     self.llm_transformations.append(t)
                 else:
                     self.main_transformations.append(t)
         else:
-            logger.warning("LLMTransformation class not found, adding all to main.")
+            logger.warning("LLM transformation classes not found, adding all to main.")
             self.main_transformations = transformations
 
         # Columns for the *main* pipeline cache
         self.columns = [t.column_name for t in self.main_transformations]
+        
+        # Log transformation details for debugging
+        main_names = [type(t).__name__ for t in self.main_transformations]
+        llm_names = [type(t).__name__ for t in self.llm_transformations]
+        
         logger.info(
             f"Pipeline initialized for table '{table_name}'. "
-            f"Main transforms: {len(self.main_transformations)}, "
-            f"LLM transforms: {len(self.llm_transformations)}"
+            f"Main transforms ({len(self.main_transformations)}): {main_names}, "
+            f"LLM transforms ({len(self.llm_transformations)}): {llm_names}"
         )
 
     def transform_data(self, words: List[str], dev_mode: bool = False) -> pd.DataFrame:
@@ -114,10 +121,17 @@ class TransformationPipeline:
             logger.info(
                 f"Running LLM transformations on {len(df_processed)} total words..."
             )
+            logger.info(f"LLM transformations to run: {[type(t).__name__ for t in self.llm_transformations]}")
             for llm_transform in self.llm_transformations:
+                transform_name = type(llm_transform).__name__
+                logger.info(f"Running {transform_name}...")
                 # The llm_transform.apply method will handle its own caching
                 # and merge columns back into df_processed
+                df_before = list(df_processed.columns)
                 df_processed = llm_transform.apply(df_processed)
+                df_after = list(df_processed.columns)
+                new_columns = [col for col in df_after if col not in df_before]
+                logger.info(f"{transform_name} complete. New columns: {new_columns}")
             logger.info("LLM transformations complete.")
 
         # 8. Merge with original list to preserve order and duplicates

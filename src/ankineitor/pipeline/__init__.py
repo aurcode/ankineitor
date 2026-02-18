@@ -7,6 +7,7 @@ from .transformations import (
     TimestampTransformation,
 )
 from .llm_transformation import LLMTransformation
+from .llm_audio_transformation import LLMAudioTransformation
 from .audio_creator import AudioCreator
 from .db_client import SQLAlchemyClient
 
@@ -18,6 +19,7 @@ __all__ = [
     "AudioTransformation",
     "TimestampTransformation",
     "LLMTransformation",
+    "LLMAudioTransformation",
     "AudioCreator",
     "SQLAlchemyClient",
 ]

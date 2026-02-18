@@ -33,19 +33,62 @@ main:
 
         <!-- Examples Section (Only shows if fields are not empty) -->
         <div class="examples-container">
+        <div class="examples-header">📚 Example Sentences</div>
         {{#Example 1}}
-        <div class="example-group">
-        <div class="example-sentence">{{Example 1}}</div>
+        <div class="example-card">
+        <div class="example-number">1</div>
+        <div class="example-content">
+        <div class="example-sentence clickable-sentence" onclick="playAudio('example1')">{{Example 1}}</div>
+        {{#Example 1 Audio}}
+        <div class="audio-controls">
+        <button class="play-button" onclick="playAudio('example1')" title="Play audio">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M8 5v14l11-7z"/>
+        </svg>
+        </button>
+        <span class="audio-label">🔊 Click sentence or button to play</span>
+        </div>
+        <div id="example1-audio" style="display:none;">{{Example 1 Audio}}</div>
+        {{/Example 1 Audio}}
+        </div>
         </div>
         {{/Example 1}}
         {{#Example 2}}
-        <div class="example-group">
-        <div class="example-sentence">{{Example 2}}</div>
+        <div class="example-card">
+        <div class="example-number">2</div>
+        <div class="example-content">
+        <div class="example-sentence clickable-sentence" onclick="playAudio('example2')">{{Example 2}}</div>
+        {{#Example 2 Audio}}
+        <div class="audio-controls">
+        <button class="play-button" onclick="playAudio('example2')" title="Play audio">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M8 5v14l11-7z"/>
+        </svg>
+        </button>
+        <span class="audio-label">🔊 Click sentence or button to play</span>
+        </div>
+        <div id="example2-audio" style="display:none;">{{Example 2 Audio}}</div>
+        {{/Example 2 Audio}}
+        </div>
         </div>
         {{/Example 2}}
         {{#Example 3}}
-        <div class="example-group">
-        <div class="example-sentence">{{Example 3}}</div>
+        <div class="example-card">
+        <div class="example-number">3</div>
+        <div class="example-content">
+        <div class="example-sentence clickable-sentence" onclick="playAudio('example3')">{{Example 3}}</div>
+        {{#Example 3 Audio}}
+        <div class="audio-controls">
+        <button class="play-button" onclick="playAudio('example3')" title="Play audio">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M8 5v14l11-7z"/>
+        </svg>
+        </button>
+        <span class="audio-label">🔊 Click sentence or button to play</span>
+        </div>
+        <div id="example3-audio" style="display:none;">{{Example 3 Audio}}</div>
+        {{/Example 3 Audio}}
+        </div>
         </div>
         {{/Example 3}}
 
@@ -170,6 +213,114 @@ main:
         window.addEventListener("load", initSwitchPrefs, false);
         }
         }
+
+        // --- AUDIO PLAYBACK FUNCTIONS ---
+        var currentlyPlaying = null;
+
+        function playAudio(exampleId) {
+            console.log("Playing audio for: " + exampleId);
+            
+            // Stop any currently playing audio
+            if (currentlyPlaying) {
+                stopAudio(currentlyPlaying);
+            }
+            
+            var audioDiv = document.getElementById(exampleId + '-audio');
+            var sentence = document.querySelector('[onclick="playAudio(\'' + exampleId + '\')"]');
+            var playButton = document.querySelector('[onclick="playAudio(\'' + exampleId + '\')"].play-button');
+            
+            if (!audioDiv || !audioDiv.innerHTML.trim()) {
+                console.log("No audio found for: " + exampleId);
+                return;
+            }
+            
+            try {
+                // Get the audio file path from the hidden div
+                var audioPath = audioDiv.innerHTML.trim();
+                console.log("Audio path: " + audioPath);
+                
+                // Create audio element if it doesn't exist
+                if (!audioDiv.audioElement) {
+                    audioDiv.audioElement = new Audio(audioPath);
+                    audioDiv.audioElement.addEventListener('ended', function() {
+                        stopAudio(exampleId);
+                    });
+                    audioDiv.audioElement.addEventListener('error', function(e) {
+                        console.error("Audio playback error:", e);
+                        stopAudio(exampleId);
+                    });
+                }
+                
+                // Add visual feedback
+                if (sentence) {
+                    sentence.classList.add('sentence-playing');
+                }
+                if (playButton) {
+                    playButton.classList.add('playing');
+                }
+                
+                // Play the audio
+                audioDiv.audioElement.currentTime = 0;
+                audioDiv.audioElement.play();
+                
+                currentlyPlaying = exampleId;
+                console.log("Audio started playing for: " + exampleId);
+                
+            } catch (error) {
+                console.error("Error playing audio:", error);
+                stopAudio(exampleId);
+            }
+        }
+
+        function stopAudio(exampleId) {
+            console.log("Stopping audio for: " + exampleId);
+            
+            var audioDiv = document.getElementById(exampleId + '-audio');
+            var sentence = document.querySelector('[onclick="playAudio(\'' + exampleId + '\')"]');
+            var playButton = document.querySelector('[onclick="playAudio(\'' + exampleId + '\')"].play-button');
+            
+            // Remove visual feedback
+            if (sentence) {
+                sentence.classList.remove('sentence-playing');
+            }
+            if (playButton) {
+                playButton.classList.remove('playing');
+            }
+            
+            // Stop and reset audio
+            if (audioDiv && audioDiv.audioElement) {
+                audioDiv.audioElement.pause();
+                audioDiv.audioElement.currentTime = 0;
+            }
+            
+            if (currentlyPlaying === exampleId) {
+                currentlyPlaying = null;
+            }
+            
+            console.log("Audio stopped for: " + exampleId);
+        }
+
+        // Add keyboard shortcuts
+        document.addEventListener('keydown', function(event) {
+            if (event.key === '1') playAudio('example1');
+            else if (event.key === '2') playAudio('example2');
+            else if (event.key === '3') playAudio('example3');
+        });
+
+        // Add touch feedback for mobile
+        document.addEventListener('touchstart', function(event) {
+            if (event.target.classList.contains('clickable-sentence')) {
+                event.target.style.transform = 'scale(0.98)';
+            }
+        });
+
+        document.addEventListener('touchend', function(event) {
+            if (event.target.classList.contains('clickable-sentence')) {
+                setTimeout(function() {
+                    event.target.style.transform = '';
+                }, 150);
+            }
+        });
         </script>
 css: |
         /* STYLING (CSS)
@@ -528,6 +679,189 @@ css: |
         .example-sentence {
             color: var(--text1);
             font-style: italic;
+        }
+
+        .example-audio {
+            margin-top: 8px;
+            text-align: center;
+        }
+
+        .example-audio .replay-button {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            background-color: var(--brand);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+        }
+
+        .example-audio .replay-button svg {
+            fill: white;
+            width: 18px;
+            height: 18px;
+            margin: 6px;
+        }
+
+        .example-audio .replay-button:hover {
+            background-color: var(--pinyin-color);
+            transform: scale(1.1);
+        }
+
+        /* --- NEW ENHANCED STYLES FOR INTERACTIVE SENTENCES --- */
+
+        .examples-header {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: var(--brand);
+            margin-bottom: 15px;
+            text-align: center;
+            padding: 10px;
+            background: var(--surface2);
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .example-card {
+            display: flex;
+            align-items: flex-start;
+            background: var(--surface2);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+            border-left: 4px solid var(--brand);
+        }
+
+        .example-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+        }
+
+        .example-number {
+            background: var(--brand);
+            color: white;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.1em;
+            margin-right: 15px;
+            flex-shrink: 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .example-content {
+            flex: 1;
+        }
+
+        .clickable-sentence {
+            font-size: 1.2em;
+            color: var(--text1);
+            background: var(--surface3);
+            padding: 12px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 10px;
+            border: 2px solid transparent;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .clickable-sentence:hover {
+            background: var(--surface4);
+            border-color: var(--brand);
+            transform: scale(1.02);
+        }
+
+        .clickable-sentence:active {
+            transform: scale(0.98);
+        }
+
+        .clickable-sentence::before {
+            content: "🔊";
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            opacity: 0.7;
+            font-size: 1.1em;
+        }
+
+        .clickable-sentence:hover::before {
+            opacity: 1;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: translateY(-50%) scale(1); }
+            50% { transform: translateY(-50%) scale(1.1); }
+            100% { transform: translateY(-50%) scale(1); }
+        }
+
+        .audio-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .play-button {
+            background: var(--brand);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+
+        .play-button:hover {
+            background: var(--pinyin-color);
+            transform: scale(1.1);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+
+        .play-button:active {
+            transform: scale(0.95);
+        }
+
+        .play-button.playing {
+            background: var(--tone-2);
+            animation: playing 1s infinite;
+        }
+
+        @keyframes playing {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .audio-label {
+            color: var(--text2);
+            font-size: 0.9em;
+            font-style: italic;
+        }
+
+        .sentence-playing {
+            background: linear-gradient(135deg, var(--surface3), var(--brand)20) !important;
+            border-color: var(--brand) !important;
+            animation: glow 1.5s ease-in-out infinite alternate;
+        }
+
+        @keyframes glow {
+            from { box-shadow: 0 0 5px var(--brand); }
+            to { box-shadow: 0 0 20px var(--brand); }
         }
 
         .extras-group {
