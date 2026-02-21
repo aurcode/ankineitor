@@ -1,4 +1,3 @@
-import os
 import pandas as pd
 from typing import Optional
 from loguru import logger
@@ -14,8 +13,11 @@ class LLMAudioTransformation(Transformation):
     Adds audio columns for each example sentence (sentence_1, sentence_2, sentence_3).
     """
 
-    def __init__(self, audio_creator: AudioCreator):
+    def __init__(
+        self, audio_creator: AudioCreator, source_language: str = "Chinese (Simplified)"
+    ):
         self.audio_creator = audio_creator
+        self.source_language = source_language
         logger.info("LLMAudioTransformation initialized")
 
     @property
@@ -41,6 +43,11 @@ class LLMAudioTransformation(Transformation):
             return df
 
         logger.info(f"Found {len(available_sentences)} sentence columns: {available_sentences}")
+        tts_language = self.audio_creator.resolve_tts_language(self.source_language)
+        logger.info(
+            f"LLM sentence audio language resolved to '{tts_language}' "
+            f"from source '{self.source_language}'."
+        )
 
         # Generate audio for each sentence column
         for sentence_col in available_sentences:
@@ -52,7 +59,9 @@ class LLMAudioTransformation(Transformation):
                 
                 # Create audio files for each sentence
                 df[audio_col] = df[sentence_col].progress_apply(
-                    lambda sentence: self._create_sentence_audio(sentence) if pd.notna(sentence) and sentence.strip() else None
+                    lambda sentence: self._create_sentence_audio(sentence, language=tts_language)
+                    if pd.notna(sentence) and sentence.strip()
+                    else None
                 )
                 
                 # Log some sample results for debugging
@@ -64,7 +73,9 @@ class LLMAudioTransformation(Transformation):
         logger.info("LLM Audio transformation applied successfully")
         return df
 
-    def _create_sentence_audio(self, sentence: str) -> Optional[str]:
+    def _create_sentence_audio(
+        self, sentence: str, language: Optional[str] = None
+    ) -> Optional[str]:
         """
         Creates audio for a single sentence using the AudioCreator.
         
@@ -80,7 +91,9 @@ class LLMAudioTransformation(Transformation):
         try:
             # Use the existing AudioCreator to generate audio
             # The AudioCreator handles caching automatically
-            audio_path = self.audio_creator._create_audio(sentence.strip())
+            audio_path = self.audio_creator._create_audio(
+                sentence.strip(), language=language
+            )
             return audio_path
         except Exception as e:
             logger.error(f"Error creating audio for sentence '{sentence[:50]}...': {e}")

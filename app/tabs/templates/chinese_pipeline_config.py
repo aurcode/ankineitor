@@ -17,6 +17,7 @@ CHINESE_PIPELINE_SETUP = {
         {"name": "English Meaning"},
         {"name": "Spanish Meaning"},
         {"name": "Audio"},
+        {"name": "Image"},
         {"name": "Example 1"},
         {"name": "Example 2"},
         {"name": "Example 3"},
@@ -34,6 +35,7 @@ CHINESE_PIPELINE_SETUP = {
         {"csv_column": "meaning_english"},
         {"csv_column": "meaning_spanish"},
         {"csv_column": "audio"},
+        {"csv_column": "picture"},
         {"csv_column": "sentence_1"},
         {"csv_column": "sentence_2"},
         {"csv_column": "sentence_3"},
@@ -47,6 +49,7 @@ CHINESE_PIPELINE_SETUP = {
     # 3. Media Fields: Tells the generator which columns are files
     "media_fields": [
         {"column_name": "audio", "media_type": "audio"},
+        {"column_name": "picture", "media_type": "image"},
         {"column_name": "sentence_1_audio", "media_type": "audio"},
         {"column_name": "sentence_2_audio", "media_type": "audio"},
         {"column_name": "sentence_3_audio", "media_type": "audio"},

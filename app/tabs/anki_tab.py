@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import yaml
 import re
+import tempfile
 from pathlib import Path
 from loguru import logger
 
@@ -125,6 +126,7 @@ def render_anki_tab():
                 st.session_state.anki_config[key] = value
 
             st.success("Loaded Chinese Pipeline setup!")
+            st.session_state["app_active_tab"] = "🤖 Anki Deck Generator"
             st.rerun()  # Rerun to reflect changes in all widgets
         # --- End of New Button ---
 
@@ -252,14 +254,20 @@ def render_anki_tab():
                         "tag_rules": tag_rules_list,  # Use parsed list
                     }
 
-                    # 3. Write temp config
-                    temp_config_file = Path("temp_anki_config.yaml")
-                    with open(temp_config_file, "w", encoding="utf-8") as f:
-                        yaml.dump(config_dict, f, allow_unicode=True)
+                    # 3. Write temp config using a unique file name per run/session
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        suffix=".yaml",
+                        prefix="anki_config_",
+                        delete=False,
+                        encoding="utf-8",
+                    ) as tmp_file:
+                        temp_config_file = Path(tmp_file.name)
+                        yaml.dump(config_dict, tmp_file, allow_unicode=True)
 
                     # 4. Ensure output dir exists
                     output_path = Path(output_dir)
-                    output_path.mkdir(exist_ok=True)
+                    output_path.mkdir(parents=True, exist_ok=True)
 
                     # 5. Initialize Generator and Run
                     logger.info("Initializing DeckGenerator...")

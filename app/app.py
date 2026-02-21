@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import inspect
 from loguru import logger
 
 # --- Core App Dependencies ---
@@ -13,6 +14,10 @@ from ankineitor.pipeline.transformations import (
 )
 from ankineitor.pipeline.llm_transformation import LLMTransformation
 from ankineitor.pipeline.llm_audio_transformation import LLMAudioTransformation
+from ankineitor.pipeline.llm_image_prompt_transformation import (
+    LLMImagePromptTransformation,
+)
+from ankineitor.pipeline.llm_image_transformation import LLMImageTransformation
 
 # --- Tab Imports ---
 # Import the render functions from their new files
@@ -35,8 +40,13 @@ st.set_page_config(
 )
 
 # --- Logging Setup ---
-os.makedirs("logs", exist_ok=True)
-logger.add("logs/streamlit_app.log", rotation="10 MB", level="INFO")
+@st.cache_resource
+def setup_logging():
+    os.makedirs("logs", exist_ok=True)
+    logger.add("logs/streamlit_app.log", rotation="10 MB", level="INFO")
+
+
+setup_logging()
 
 
 # --- Cached Resource Initialization ---
@@ -62,6 +72,10 @@ def get_dependencies():
             "Audio": AudioTransformation(audio_creator=audio_creator),
             "Timestamp": TimestampTransformation(),
             "LLM (Meanings/Sentences)": LLMTransformation(db_client=llm_db),
+            "LLM Image Prompt (Visual Translator)": LLMImagePromptTransformation(
+                db_client=llm_db
+            ),
+            "LLM Image Renderer (Master Prompt)": LLMImageTransformation(),
             "LLM Audio (Sentences)": LLMAudioTransformation(audio_creator=audio_creator),
         }
         logger.info("Dependencies initialized successfully.")
@@ -84,28 +98,37 @@ st.title("Ankineitor Control Panel ⚙️")
 if not pipeline_db_client or not all_transformations:
     st.error("Application cannot start. Dependencies failed to load.")
 else:
-    # --- Tab Creation ---
+    # Use explicit stateful navigation so reruns keep the same active section.
     tab_list = [
-        "🤖Anki Deck Generator",
+        "🤖 Anki Deck Generator",
         "🚀 Run Pipeline",
         "📊 Merge CSVs",
         "🔠 Word Extractor",
     ]
+    if (
+        "app_active_tab" not in st.session_state
+        or st.session_state["app_active_tab"] not in tab_list
+    ):
+        st.session_state["app_active_tab"] = tab_list[0]
 
-    tabs = st.tabs(tab_list)
+    radio_kwargs = {
+        "label": "Section",
+        "options": tab_list,
+        "key": "app_active_tab",
+    }
+    radio_signature = inspect.signature(st.radio).parameters
+    if "horizontal" in radio_signature:
+        radio_kwargs["horizontal"] = True
+    if "label_visibility" in radio_signature:
+        radio_kwargs["label_visibility"] = "collapsed"
 
-    # --- Render Tab 1 ---
-    with tabs[0]:
+    selected_tab = st.radio(**radio_kwargs)
+
+    if selected_tab == tab_list[0]:
         render_anki_tab()
-
-    # --- Render Tab 2 ---
-    with tabs[1]:
+    elif selected_tab == tab_list[1]:
         render_pipeline_tab(pipeline_db_client, all_transformations)
-
-    # --- Render Tab 3 ---
-    with tabs[2]:
+    elif selected_tab == tab_list[2]:
         render_merge_csv_tab()
-
-    # --- Render Tab 4 ---
-    with tabs[3]:
+    elif selected_tab == tab_list[3]:
         word_extractor_tab()

@@ -9,6 +9,7 @@ The application is built with a Streamlit web interface, providing a user-friend
 - **Automated Anki Deck Creation**: Generates `.apkg` files that can be directly imported into Anki.
 - **Configurable Pipeline**: Customize the data transformations to fit your learning needs.
 - **Multimedia Enrichment**: Automatically adds audio pronunciations, translations, and Pinyin to your flashcards.
+- **Two-Stage AI Image Generation**: Stage 1 (text LLM) builds a strict master image prompt with Victorian gaslamp constraints, Stage 2 (image model) renders it and saves the file path to `picture`.
 - **LLM Integration**: Leverages Large Language Models (LLMs) to generate meaningful example sentences and detailed explanations for vocabulary.
 - **Efficient Caching**: Uses a database to cache processed words, so you only process new vocabulary, saving time and resources.
 - **User-Friendly Web Interface**: A Streamlit-based control panel makes it easy to run the pipeline and generate decks.
@@ -24,6 +25,8 @@ The project is structured as a data processing pipeline with a web interface.
     - **Translation Transformation**: Translates words into a target language (e.g., Spanish).
     - **Audio Transformation**: Creates audio files for pronunciation.
     - **LLM Transformation**: Uses an LLM to generate example sentences and other contextual information.
+    - **LLM Image Prompt Transformation (Stage 1)**: Classifies each term and generates a strict master image prompt.
+    - **LLM Image Transformation (Stage 2)**: Renders the Stage 1 master prompt into a final flashcard-friendly image.
 3.  **Deck Generation**: The processed data is then used to generate an Anki deck (`.apkg` file) based on a flexible YAML configuration that defines the card structure, fields, and styling.
 
 ## 🚀 Getting Started
@@ -50,7 +53,7 @@ The project is structured as a data processing pipeline with a web interface.
     This will build the Docker image and start the Streamlit application.
 
 3.  **Access the application:**
-    Open your web browser and navigate to `http://localhost:8501`.
+    Open your web browser and navigate to `http://localhost:8502`.
 
 ### Usage
 
@@ -77,3 +80,10 @@ The core of the deck generation is controlled by `services/Processing/config.yam
 - Rules for generating tags.
 
 By modifying this file, you can create highly customized Anki decks tailored to your specific learning style.
+
+LLM language behavior is configured with environment variables:
+- `LLM_SOURCE_LANGUAGE`: source language for non-Chinese words (`auto` by default).
+- `LLM_TARGET_LANGUAGE`: primary target language for non-Chinese words (`english` by default).
+- `LLM_SECONDARY_TARGET_LANGUAGE`: optional secondary target language (blank by default).
+
+Chinese words are always processed with meanings in English and Spanish.

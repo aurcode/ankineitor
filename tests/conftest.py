@@ -20,17 +20,33 @@ def mock_settings():
     """Mock settings for testing."""
     with patch('ankineitor.config.settings.get_settings') as mock:
         settings = Mock()
-        settings.groq_api_key = "gsk_test_api_key_1234567890abcdef"
+        settings.llm_api_token = "AQ.test_token_1234567890abcdef"
+        settings.gemini_api_key = None
+        settings.google_api_key = None
         settings.pipeline_db_path = "test_pipeline.db"
         settings.llm_cache_db_path = "test_llm_cache.db"
         settings.audio_output_dir = "./test_audio_files"
-        settings.llm_model = "llama-3.3-70b-versatile"
+        settings.image_output_dir = "./test_image_files"
+        settings.llm_model = "gemini-3-flash-preview"
+        settings.llm_image_prompt_model = "gemini-3-flash-preview"
+        settings.llm_image_master_prompt_template = None
+        settings.llm_image_do_not_generate_terms = ["与", "一个", "不会"]
+        settings.llm_image_model = "gemini-3-pro-image-preview"
+        settings.llm_image_max_workers = 1
+        settings.llm_source_language = "Chinese (Simplified)"
+        settings.llm_target_language = "english"
+        settings.llm_secondary_target_language = None
         settings.llm_max_retries = 3
         settings.llm_timeout = 30
+        settings.gcp_project_id = "test-project"
+        settings.gcp_location = "us-central1"
+        settings.bq_credentials_path = None
+        settings.vertex_credentials_path = None
         settings.max_file_size_mb = 10
         settings.allowed_file_extensions = [".csv", ".txt", ".pdf", ".docx", ".pptx"]
         settings.log_level = "INFO"
         settings.dev_mode = False
+        settings.resolve_llm_api_token = Mock(return_value="AQ.test_token_1234567890abcdef")
         mock.return_value = settings
         yield settings
 

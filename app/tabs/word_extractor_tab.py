@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from typing import Dict, List
+from typing import Dict
 
 from ankineitor.pipeline.text_extractor import TextExtractor
 from ankineitor.common.data_utils import DataUtils
@@ -81,17 +81,24 @@ def word_extractor_tab():
         "Upload one or more files (PDF, DOCX, TXT, PPTX) or paste text directly below."
     )
 
-    uploaded_files = st.file_uploader(
-        "Upload Documents",
-        type=["pdf", "docx", "txt", "pptx"],
-        accept_multiple_files=True,
-    )
-    text_input = st.text_area("Or Paste Text Here", height=200)
+    with st.form("word_extractor_input_form", clear_on_submit=False):
+        uploaded_files = st.file_uploader(
+            "Upload Documents",
+            type=["pdf", "docx", "txt", "pptx"],
+            accept_multiple_files=True,
+            key="word_extractor_uploaded_files",
+        )
+        text_input = st.text_area(
+            "Or Paste Text Here",
+            height=200,
+            key="word_extractor_text_input",
+        )
+        analyze_clicked = st.form_submit_button("Analyze Text", type="primary")
 
     # --- 2. Processing and Filtering ---
     st.header("2. Analyze and Filter")
 
-    if st.button("Analyze Text", type="primary"):
+    if analyze_clicked:
         with st.spinner("Extracting and analyzing text... This may take a moment."):
             # Reset state on new analysis
             st.session_state.word_df = pd.DataFrame()
@@ -100,11 +107,25 @@ def word_extractor_tab():
             st.session_state.final_df = pd.DataFrame()
 
             files_to_process: Dict[str, bytes] = {}
-            if uploaded_files:
-                for up_file in uploaded_files:
-                    files_to_process[up_file.name] = up_file.getvalue()
-            elif text_input:
-                files_to_process["pasted_text.txt"] = text_input.encode("utf-8")
+            raw_uploaded_files = (
+                uploaded_files
+                if uploaded_files is not None
+                else st.session_state.get("word_extractor_uploaded_files", [])
+            )
+
+            if raw_uploaded_files:
+                for up_file in raw_uploaded_files:
+                    if up_file is None:
+                        continue
+                    file_content = up_file.getvalue()
+                    if file_content:
+                        files_to_process[up_file.name] = file_content
+
+            if text_input and text_input.strip():
+                pasted_key = "pasted_text.txt"
+                if pasted_key in files_to_process:
+                    pasted_key = "__pasted_text_input__.txt"
+                files_to_process[pasted_key] = text_input.strip().encode("utf-8")
 
             if files_to_process:
                 try:
@@ -118,8 +139,21 @@ def word_extractor_tab():
                         st.success(
                             f"✅ Analysis complete! Found {len(df)} unique words."
                         )
+                        if extractor.extraction_errors:
+                            with st.expander("Extraction warnings (some files failed)"):
+                                for file_name, error_msg in extractor.extraction_errors.items():
+                                    st.warning(f"{file_name}: {error_msg}")
                     else:
-                        st.warning("No Chinese words were found in the provided text.")
+                        if extractor.extraction_errors:
+                            st.error(
+                                "Text extraction failed for uploaded file(s). "
+                                "See details below."
+                            )
+                            with st.expander("Extraction errors"):
+                                for file_name, error_msg in extractor.extraction_errors.items():
+                                    st.error(f"{file_name}: {error_msg}")
+                        else:
+                            st.warning("No Chinese words were found in the provided text.")
 
                 except Exception as e:
                     st.error(f"An error occurred during analysis: {e}")
@@ -131,7 +165,11 @@ def word_extractor_tab():
         st.subheader("Initial Word Frequency")
         st.dataframe(st.session_state.word_df)
 
-        # --- HSK Filtering Section (Corrected Logic) ---
+        # Default to no HSK filtering applied.
+        st.session_state.filtered_df = st.session_state.word_df
+        st.session_state.excluded_df = pd.DataFrame()
+
+        # --- HSK Filtering Section ---
         hsk_data = load_hsk_filters()
         if hsk_data:
             st.subheader("HSK Level Filter")
@@ -149,9 +187,9 @@ def word_extractor_tab():
                     level: hsk_data[level] for level in selected_hsk_levels
                 }
 
-                # The filter_dataframe function returns (excluded, filtered)
-                # 'excluded_df' contains words NOT in the HSK lists (the ones we keep).
-                # 'filtered_df' contains words that ARE in the HSK lists (the ones removed).
+                # filter_dataframe returns:
+                # - remaining_df: rows NOT in the selected HSK lists (kept)
+                # - removed_df: rows in the selected HSK lists (removed)
                 remaining_df, removed_df = DataUtils.filter_dataframe(
                     st.session_state.word_df,
                     filters_to_apply,
@@ -160,51 +198,46 @@ def word_extractor_tab():
                 st.session_state.filtered_df = remaining_df
                 st.session_state.excluded_df = removed_df
                 st.info(f"Removed {len(removed_df)} words based on HSK filter.")
-            else:
-                # If no HSK filter is applied, the filtered_df is the same as the original
-                st.session_state.filtered_df = st.session_state.word_df
-                st.session_state.excluded_df = pd.DataFrame()
-
-            if not st.session_state.filtered_df.empty:
-                st.subheader("Words After HSK Filtering")
-                st.dataframe(st.session_state.filtered_df)
-
-                # --- Frequency Filtering Section ---
-                st.subheader("Frequency Filter")
-                min_frequency = st.number_input(
-                    "Show words with frequency greater than or equal to:",
-                    min_value=1,
-                    value=2,
-                    step=1,
-                )
-
-                final_df = st.session_state.filtered_df[
-                    st.session_state.filtered_df["frequency"] >= min_frequency
-                ]
-                st.session_state.final_df = final_df
-
-                # --- 3. Output Section ---
-                st.header("3. Final Word List")
-                if not st.session_state.final_df.empty:
-                    st.success(
-                        f"Displaying {len(st.session_state.final_df)} final words."
-                    )
-
-                    # Format for easy copy-pasting
-                    word_list_str = "\n".join(
-                        st.session_state.final_df["word"].tolist()
-                    )
-                    st.text_area("Copyable Word List", value=word_list_str, height=300)
-
-                    with st.expander("View Final DataFrame"):
-                        st.dataframe(st.session_state.final_df)
-
-                    if not st.session_state.excluded_df.empty:
-                        with st.expander("View Words Removed by HSK Filter"):
-                            st.dataframe(st.session_state.excluded_df)
-                else:
-                    st.warning("No words match the current frequency filter.")
         else:
             st.warning(
-                "Could not load HSK filter data. Please check your internet connection."
+                "Could not load HSK filter data. "
+                "Continuing without HSK filtering."
             )
+
+        if not st.session_state.filtered_df.empty:
+            st.subheader("Words After HSK Filtering")
+            st.dataframe(st.session_state.filtered_df)
+
+            # --- Frequency Filtering Section ---
+            st.subheader("Frequency Filter")
+            min_frequency = st.number_input(
+                "Show words with frequency greater than or equal to:",
+                min_value=1,
+                value=2,
+                step=1,
+            )
+
+            final_df = st.session_state.filtered_df[
+                st.session_state.filtered_df["frequency"] >= min_frequency
+            ]
+            st.session_state.final_df = final_df
+
+            # --- 3. Output Section ---
+            st.header("3. Final Word List")
+            if not st.session_state.final_df.empty:
+                st.success(
+                    f"Displaying {len(st.session_state.final_df)} final words."
+                )
+
+                # Format for easy copy-pasting
+                word_list_str = "\n".join(st.session_state.final_df["word"].tolist())
+                st.text_area("Copyable Word List", value=word_list_str, height=300)
+
+                with st.expander("View Final DataFrame"):
+                    st.dataframe(st.session_state.final_df)
+
+                if not st.session_state.excluded_df.empty:
+                    with st.expander("View Words Removed by HSK Filter"):
+                        st.dataframe(st.session_state.excluded_df)
+            else:
+                st.warning("No words match the current frequency filter.")

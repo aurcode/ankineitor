@@ -498,8 +498,8 @@ class TestAdvancedSecurityScenarios:
         
         # Test with null bytes
         content_with_null = "word,pinyin\ntest\x00test,test"
-        result = validate_csv_content(content_with_null)
-        assert result is True
+        with pytest.raises(InvalidFileError):
+            validate_csv_content(content_with_null)
 
     def test_resource_exhaustion_prevention(self):
         """Test prevention of resource exhaustion attacks."""

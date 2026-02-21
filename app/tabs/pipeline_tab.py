@@ -1,10 +1,134 @@
 import streamlit as st
 import pandas as pd
+import re
+from pathlib import Path
 from loguru import logger
 
 # Import only the pipeline-specific dependencies
 from ankineitor.pipeline import TransformationPipeline
+from ankineitor.pipeline.transformations import PinyinTransformation, AudioTransformation
+from ankineitor.pipeline.llm_transformation import LLMTransformation
+from ankineitor.pipeline.llm_audio_transformation import LLMAudioTransformation
+from ankineitor.pipeline.llm_image_prompt_transformation import (
+    LLMImagePromptTransformation,
+)
+from ankineitor.pipeline.llm_image_transformation import LLMImageTransformation
 from ankineitor.security import validate_word_input, ValidationError
+
+POPULAR_LANGUAGE_OPTIONS = [
+    "English",
+    "Spanish",
+    "French",
+    "German",
+    "Portuguese",
+    "Italian",
+    "Chinese (Simplified)",
+    "Japanese",
+    "Korean",
+    "Hindi",
+    "Arabic",
+    "Russian",
+    "Turkish",
+    "Vietnamese",
+    "Indonesian",
+]
+SOURCE_LANGUAGE_OPTIONS = POPULAR_LANGUAGE_OPTIONS
+
+
+def _coerce_language_option(value, options, fallback):
+    """Map persisted/free-text values to one of the allowed options."""
+    if value is None:
+        return fallback
+
+    value_str = str(value).strip()
+    if value_str in options:
+        return value_str
+
+    for option in options:
+        if option.lower() == value_str.lower():
+            return option
+
+    return fallback
+
+
+def _language_label(value):
+    if value is None:
+        return "None"
+    return value
+
+
+def _render_image_preview(df_results: pd.DataFrame) -> None:
+    """Render generated image previews from the `picture` column."""
+    if "picture" not in df_results.columns:
+        return
+
+    image_df = df_results[["word", "picture"]].dropna(subset=["picture"]).copy()
+    image_df["picture"] = image_df["picture"].astype(str).str.strip()
+    image_df = image_df[image_df["picture"] != ""]
+
+    if image_df.empty:
+        st.info("No generated images found in `picture` yet.")
+        return
+
+    st.subheader("Generated Image Preview")
+    st.caption(f"Showing all {len(image_df)} generated images.")
+
+    columns = st.columns(3)
+    missing_count = 0
+
+    for idx, row in image_df.reset_index(drop=True).iterrows():
+        word = str(row.get("word", "")).strip() or "(no word)"
+        image_path = Path(row["picture"])
+        column = columns[idx % len(columns)]
+
+        with column:
+            st.markdown(f"**{word}**")
+            if image_path.exists():
+                st.image(str(image_path), use_container_width=True)
+                st.caption(str(image_path))
+            else:
+                missing_count += 1
+                st.warning(f"Missing file: `{image_path}`")
+
+    if missing_count > 0:
+        st.warning(
+            f"{missing_count} preview item(s) point to files that do not exist locally."
+        )
+
+
+def _render_image_prompt_details(df_results: pd.DataFrame) -> None:
+    """Render stage-1 prompt details and skipped-item diagnostics."""
+    if "image_generation_skip_reason" in df_results.columns:
+        skipped = (
+            df_results[["word", "image_generation_skip_reason"]]
+            .dropna(subset=["image_generation_skip_reason"])
+            .copy()
+        )
+        skipped["image_generation_skip_reason"] = (
+            skipped["image_generation_skip_reason"].astype(str).str.strip()
+        )
+        skipped = skipped[skipped["image_generation_skip_reason"] != ""]
+        if not skipped.empty:
+            st.warning(
+                f"{len(skipped)} word(s) were skipped by Stage 1 prompt generation."
+            )
+            st.dataframe(skipped, use_container_width=True, hide_index=True)
+
+    if "master_image_prompt" in df_results.columns:
+        preview_columns = [
+            "word",
+            "image_term_type",
+            "visual_description",
+            "master_image_prompt",
+        ]
+        preview_columns = [col for col in preview_columns if col in df_results.columns]
+        if len(preview_columns) > 1:
+            st.subheader("Stage 1 Prompt Outputs")
+            st.dataframe(
+                df_results[preview_columns],
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def render_pipeline_tab(pipeline_db_client, all_transformations):
@@ -22,14 +146,32 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
     )
 
     col1, col2 = st.columns(2)
+    transform_names = list(all_transformations.keys())
+
+    # Persist core pipeline inputs across reruns.
+    if "pipeline_selected_transform_names" not in st.session_state:
+        st.session_state["pipeline_selected_transform_names"] = transform_names.copy()
+    else:
+        st.session_state["pipeline_selected_transform_names"] = [
+            name
+            for name in st.session_state["pipeline_selected_transform_names"]
+            if name in transform_names
+        ]
+        if not st.session_state["pipeline_selected_transform_names"]:
+            st.session_state["pipeline_selected_transform_names"] = transform_names.copy()
+
+    if "pipeline_word_input" not in st.session_state:
+        st.session_state["pipeline_word_input"] = "你好\n谢谢\n熊猫\n数据"
+
+    if "pipeline_category_name" not in st.session_state:
+        st.session_state["pipeline_category_name"] = ""
 
     with col1:
         st.subheader("1. Select Transformations")
-        transform_names = list(all_transformations.keys())
         selected_transform_names = st.multiselect(
             "Choose transformations to run:",
             options=transform_names,
-            default=transform_names,  # Default to all
+            key="pipeline_selected_transform_names",
         )
 
         # Build the list of Transformation objects
@@ -37,13 +179,92 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
             all_transformations[name] for name in selected_transform_names
         ]
 
+        has_source_language_transform = any(
+            isinstance(
+                all_transformations[name],
+                (PinyinTransformation, AudioTransformation, LLMTransformation, LLMAudioTransformation),
+            )
+            for name in selected_transform_names
+        )
+        has_llm_text_transform = any(
+            isinstance(all_transformations[name], LLMTransformation)
+            for name in selected_transform_names
+        )
+        llm_source_language = "Chinese (Simplified)"
+        llm_target_language = "English"
+        llm_secondary_target_language = None
+
+        if has_source_language_transform:
+            st.subheader("Source Language")
+            st.caption(
+                "Default source language is Chinese (Simplified). "
+                "If you choose another source language, pinyin is disabled and audio uses that language."
+            )
+
+            default_source = _coerce_language_option(
+                st.session_state.get("llm_source_language_ui"),
+                SOURCE_LANGUAGE_OPTIONS,
+                "Chinese (Simplified)",
+            )
+            llm_source_language = st.selectbox(
+                "Source language",
+                options=SOURCE_LANGUAGE_OPTIONS,
+                index=SOURCE_LANGUAGE_OPTIONS.index(default_source),
+                format_func=_language_label,
+            )
+            st.session_state["llm_source_language_ui"] = llm_source_language
+
+        if has_llm_text_transform:
+            st.subheader("LLM Target Languages")
+            st.caption(
+                "These settings apply to non-Chinese words. Chinese words always output English + Spanish. "
+                "Language choices are limited to common/popular languages."
+            )
+
+            default_target = _coerce_language_option(
+                st.session_state.get("llm_target_language_ui"),
+                POPULAR_LANGUAGE_OPTIONS,
+                "English",
+            )
+            llm_target_language = st.selectbox(
+                "Primary target language",
+                options=POPULAR_LANGUAGE_OPTIONS,
+                index=POPULAR_LANGUAGE_OPTIONS.index(default_target),
+                format_func=_language_label,
+            )
+
+            secondary_options = [None] + [
+                language
+                for language in POPULAR_LANGUAGE_OPTIONS
+                if language != llm_target_language
+            ]
+            persisted_secondary = st.session_state.get("llm_secondary_target_language_ui")
+            if persisted_secondary in ("", llm_target_language):
+                persisted_secondary = None
+            default_secondary = _coerce_language_option(
+                persisted_secondary,
+                secondary_options,
+                None,
+            )
+            llm_secondary_target_language = st.selectbox(
+                "Secondary target language (optional)",
+                options=secondary_options,
+                index=secondary_options.index(default_secondary),
+                format_func=_language_label,
+            )
+
+            st.session_state["llm_target_language_ui"] = llm_target_language
+            st.session_state["llm_secondary_target_language_ui"] = (
+                llm_secondary_target_language
+            )
+
     with col2:
         st.subheader("2. Input Words")
         word_input = st.text_area(
             "Enter words (one per line):",
-            "你好\n谢谢\n熊猫\n数据",
             height=200,
-            help="Enter Chinese words, one per line. Maximum 1000 words.",
+            help="Enter words, one per line. Maximum 1000 words.",
+            key="pipeline_word_input",
         )
 
     st.divider()
@@ -53,6 +274,17 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
             st.warning("Please select at least one transformation.")
         elif not word_input:
             st.warning("Please input at least one word.")
+        elif any(
+            isinstance(transform, LLMImageTransformation)
+            for transform in selected_transforms
+        ) and not any(
+            isinstance(transform, LLMImagePromptTransformation)
+            for transform in selected_transforms
+        ):
+            st.warning(
+                "LLM Image Renderer requires LLM Image Prompt (Visual Translator). "
+                "Select both stages."
+            )
         else:
             try:
                 # Validate and sanitize word input
@@ -67,6 +299,12 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
                     logger.info(
                         f"Starting pipeline run for {len(words_to_process)} words via Streamlit."
                     )
+                    for transform in selected_transforms:
+                        if hasattr(transform, "source_language"):
+                            transform.source_language = llm_source_language
+                        if isinstance(transform, LLMTransformation):
+                            transform.target_language = llm_target_language
+                            transform.secondary_target_language = llm_secondary_target_language
 
                     # Initialize the pipeline
                     pipeline = TransformationPipeline(
@@ -74,11 +312,105 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
                         transformations=selected_transforms,
                         table_name="hanzi_processing",
                     )
+                    total_transform_steps = max(
+                        1,
+                        len(pipeline.main_transformations)
+                        + len(pipeline.llm_transformations),
+                    )
+                    steps_completed = 0
+                    step_timings = []
+
+                    progress_header = st.empty()
+                    progress_status = st.empty()
+                    progress_bar = st.progress(0.0)
+                    timing_table_placeholder = st.empty()
+
+                    def on_pipeline_progress(event):
+                        nonlocal steps_completed
+
+                        event_type = event.get("event")
+                        if event_type == "pipeline_start":
+                            progress_header.info("Pipeline started.")
+                            progress_status.caption(
+                                f"Preparing {event.get('total_words', 0)} words..."
+                            )
+                            progress_bar.progress(0.02)
+                            return
+
+                        if event_type == "cache_checked":
+                            progress_status.caption(
+                                "Cache checked: {cached} cached, {new} new words.".format(
+                                    cached=event.get("cached_words", 0),
+                                    new=event.get("new_words", 0),
+                                )
+                            )
+                            progress_bar.progress(0.08)
+                            return
+
+                        if event_type == "transform_start":
+                            progress_status.caption(
+                                "Running {stage}: {name}...".format(
+                                    stage=event.get("stage", "step").upper(),
+                                    name=event.get("transform_name", ""),
+                                )
+                            )
+                            return
+
+                        if event_type == "transform_complete":
+                            steps_completed += 1
+                            duration_seconds = float(event.get("duration_seconds", 0.0))
+                            step_timings.append(
+                                {
+                                    "stage": event.get("stage", ""),
+                                    "step": event.get("transform_name", ""),
+                                    "seconds": round(duration_seconds, 2),
+                                }
+                            )
+                            progress_ratio = min(
+                                0.95, steps_completed / float(total_transform_steps)
+                            )
+                            progress_bar.progress(progress_ratio)
+                            progress_status.caption(
+                                "{name} finished in {seconds:.2f}s".format(
+                                    name=event.get("transform_name", ""),
+                                    seconds=duration_seconds,
+                                )
+                            )
+                            timing_table_placeholder.dataframe(
+                                pd.DataFrame(step_timings),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+                            return
+
+                        if event_type == "pipeline_complete":
+                            progress_bar.progress(1.0)
+                            progress_header.success("Pipeline complete.")
+                            total_duration = float(
+                                event.get("total_duration_seconds", 0.0)
+                            )
+                            progress_status.caption(
+                                f"Total duration: {total_duration:.2f}s"
+                            )
 
                     # Run the pipeline
-                    df_results = pipeline.transform_data(
-                        words_to_process, dev_mode=False
+                    df_results = pipeline.transform_data_with_progress(
+                        words=words_to_process,
+                        dev_mode=False,
+                        progress_callback=on_pipeline_progress,
                     )
+                    if step_timings:
+                        slowest_steps = (
+                            pd.DataFrame(step_timings)
+                            .sort_values("seconds", ascending=False)
+                            .head(3)
+                        )
+                        st.markdown("**Slowest steps**")
+                        st.dataframe(
+                            slowest_steps,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
 
                 st.success("Pipeline run complete!")
 
@@ -102,6 +434,8 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
 
         st.subheader("Results")
         st.dataframe(df_results)
+        _render_image_prompt_details(df_results)
+        _render_image_preview(df_results)
 
         # Provide download button
         csv = df_results.to_csv(index=False).encode("utf-8-sig")
@@ -126,7 +460,8 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
         category_name = st.text_input(
             "Enter a category for these words:",
             max_chars=50,
-            help="Category name (max 50 characters)"
+            help="Category name (max 50 characters)",
+            key="pipeline_category_name",
         )
 
         if st.button("Add Category to DB", use_container_width=True):
@@ -156,6 +491,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
 
                     # Update the dataframe in the UI and state
                     st.session_state.df_results = df_categorized
+                    st.session_state["app_active_tab"] = "🚀 Run Pipeline"
                     st.rerun()
 
                 except Exception as e:

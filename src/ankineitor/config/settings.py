@@ -1,6 +1,7 @@
 """Secure configuration management using Pydantic settings."""
 
 import os
+import json
 from typing import Optional
 from pydantic import validator
 from pydantic_settings import BaseSettings
@@ -11,7 +12,9 @@ class Settings(BaseSettings):
     """Secure application settings with validation."""
     
     # API Keys
-    groq_api_key: Optional[str] = None
+    llm_api_token: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    google_api_key: Optional[str] = None
     
     # Database settings
     pipeline_db_path: str = "data/ankineitor_pipeline.db"
@@ -19,11 +22,50 @@ class Settings(BaseSettings):
     
     # Audio settings
     audio_output_dir: str = "./my_audio_files"
+    image_output_dir: str = "./my_image_files"
     
     # LLM settings
-    llm_model: str = "llama-3.3-70b-versatile"
+    llm_model: str = "gemini-3-flash-preview"
+    llm_image_prompt_model: str = "gemini-3-flash-preview"
+    llm_image_master_prompt_template: Optional[str] = None
+    llm_image_do_not_generate_terms: list = [
+        "与",
+        "一个",
+        "不会",
+        "而",
+        "于",
+        "以",
+        "以及",
+        "想要",
+        "觉",
+        "之",
+        "之中",
+        "可",
+        "心头",
+        "一阵",
+        "难以",
+        "大半夜",
+        "嘶",
+        "看来",
+        "将",
+        "下意识",
+        "这时",
+        "下方",
+        "一下",
+        "连通",
+        "半个",
+    ]
+    llm_image_model: str = "gemini-3-pro-image-preview"
+    llm_image_max_workers: int = 1
+    llm_source_language: str = "Chinese (Simplified)"
+    llm_target_language: str = "english"
+    llm_secondary_target_language: Optional[str] = None
     llm_max_retries: int = 3
     llm_timeout: int = 30
+    gcp_project_id: Optional[str] = None
+    gcp_location: str = "us-central1"
+    bq_credentials_path: Optional[str] = None
+    vertex_credentials_path: Optional[str] = None
     
     # Security settings
     max_file_size_mb: int = 10
@@ -32,13 +74,6 @@ class Settings(BaseSettings):
     # Application settings
     log_level: str = "INFO"
     dev_mode: bool = False
-    
-    @validator("groq_api_key")
-    def validate_api_key(cls, v):
-        """Validate API key format."""
-        if v and not v.startswith("gsk_"):
-            raise ValueError("Invalid Groq API key format")
-        return v
     
     @validator("max_file_size_mb")
     def validate_file_size(cls, v):
@@ -67,6 +102,23 @@ class Settings(BaseSettings):
             # Ensure each extension in the list starts with a dot
             return [ext if ext.startswith(".") else f".{ext}" for ext in v]
         return v
+
+    @validator("llm_image_do_not_generate_terms", pre=True)
+    def parse_llm_image_do_not_generate_terms(cls, v):
+        """Parse blocked image terms from JSON list or comma-separated string."""
+        if isinstance(v, str):
+            cleaned = v.strip()
+            if not cleaned:
+                return []
+            if cleaned.startswith("["):
+                try:
+                    parsed = json.loads(cleaned)
+                    if isinstance(parsed, list):
+                        return parsed
+                except Exception:
+                    pass
+            return [term.strip() for term in cleaned.split(",") if term.strip()]
+        return v
     
     def ensure_directories(self):
         """Ensure required directories exist."""
@@ -74,6 +126,7 @@ class Settings(BaseSettings):
             Path(self.pipeline_db_path).parent,
             Path(self.llm_cache_db_path).parent,
             Path(self.audio_output_dir),
+            Path(self.image_output_dir),
             Path("logs"),
             Path("output"),
             Path("data"),
@@ -81,6 +134,23 @@ class Settings(BaseSettings):
         
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
+
+    def resolve_llm_api_token(self) -> Optional[str]:
+        """
+        Resolve LLM token using the same alias precedence as the private agent.
+        """
+        candidates = [
+            self.llm_api_token,
+            self.gemini_api_key,
+            self.google_api_key,
+            os.getenv("VERTEX_API_TOKEN"),
+            os.getenv("GCP_API_TOKEN"),
+            os.getenv("GOOGLE_CLOUD_ACCESS_TOKEN"),
+        ]
+        for candidate in candidates:
+            if candidate and candidate.strip():
+                return candidate.strip()
+        return None
     
     class Config:
         """Pydantic configuration."""

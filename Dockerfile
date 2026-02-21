@@ -4,6 +4,12 @@ FROM python:3.9-bullseye AS builder
 # Set working directory
 WORKDIR /app
 
+# System deps needed to build Python packages like pi-heif
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libheif-dev \
+    pkg-config \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install build dependencies if any (e.g., for compiling packages)
 # For now, we just need pip to be up-to-date
 RUN pip install --upgrade pip
@@ -18,8 +24,12 @@ FROM python:3.9-bullseye
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
+    libmagic1 \
+    libheif1 \
     poppler-utils \
     tesseract-ocr \
+    tesseract-ocr-chi-sim \
+    tesseract-ocr-chi-tra \
     gosu \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 

@@ -1,19 +1,25 @@
 from .transformations import Transformation
 from .db_client import SQLAlchemyClient
 
-from typing import List, Optional
+from typing import List, Optional, Callable, Dict, Any
 from loguru import logger
 from tqdm import tqdm
 import pandas as pd
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import LLMTransformation to check its type
 try:
     from .llm_transformation import LLMTransformation
     from .llm_audio_transformation import LLMAudioTransformation
+    from .llm_image_prompt_transformation import LLMImagePromptTransformation
+    from .llm_image_transformation import LLMImageTransformation
 except ImportError:
     # Handle case where llm_transformation might not exist
     LLMTransformation = None
     LLMAudioTransformation = None
+    LLMImagePromptTransformation = None
+    LLMImageTransformation = None
 
 
 class TransformationPipeline:
@@ -41,9 +47,19 @@ class TransformationPipeline:
         self.main_transformations: List[Transformation] = []
         self.llm_transformations: List[Transformation] = []
 
-        if LLMTransformation or LLMAudioTransformation:  # Check if LLM classes were imported
+        llm_transform_types = tuple(
+            cls
+            for cls in (
+                LLMTransformation,
+                LLMAudioTransformation,
+                LLMImagePromptTransformation,
+                LLMImageTransformation,
+            )
+            if cls is not None
+        )
+        if llm_transform_types:
             for t in transformations:
-                if isinstance(t, LLMTransformation) or isinstance(t, LLMAudioTransformation):
+                if isinstance(t, llm_transform_types):
                     self.llm_transformations.append(t)
                 else:
                     self.main_transformations.append(t)
@@ -68,10 +84,63 @@ class TransformationPipeline:
         """
         Transforms a list of Chinese words using the configured pipeline.
         """
+        return self.transform_data_with_progress(words=words, dev_mode=dev_mode)
+
+    def transform_data_with_progress(
+        self,
+        words: List[str],
+        dev_mode: bool = False,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> pd.DataFrame:
+        """
+        Transforms a list of words and optionally emits progress events.
+        """
+        def emit(event: str, **payload: Any) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback({"event": event, **payload})
+            except Exception as exc:
+                logger.debug(f"Progress callback failed for event '{event}': {exc}")
+
+        pipeline_started_at = time.perf_counter()
         logger.info(f"Starting pipeline for {len(words)} words...")
+        emit("pipeline_start", total_words=len(words))
         if dev_mode:
             words = words[:20]
             logger.warning(f"DEV MODE enabled. Processing only {len(words)} words.")
+            emit("dev_mode_applied", total_words=len(words))
+
+        def apply_llm_transform(transform: Transformation, input_df: pd.DataFrame):
+            before_cols = list(input_df.columns)
+            started_at = time.perf_counter()
+            output_df = transform.apply(input_df)
+            duration_seconds = time.perf_counter() - started_at
+            if output_df is None:
+                output_df = input_df
+            after_cols = list(output_df.columns)
+            new_columns = [col for col in after_cols if col not in before_cols]
+            return output_df, new_columns, duration_seconds
+
+        def merge_llm_output(base_df: pd.DataFrame, transform_df: pd.DataFrame) -> pd.DataFrame:
+            if self.key_field not in transform_df.columns:
+                logger.warning(
+                    f"Skipping merge for LLM transform output without '{self.key_field}' column."
+                )
+                return base_df
+
+            merge_columns = [col for col in transform_df.columns if col != self.key_field]
+            if not merge_columns:
+                return base_df
+
+            overlap = [col for col in merge_columns if col in base_df.columns]
+            if overlap:
+                base_df = base_df.drop(columns=overlap)
+
+            merge_frame = transform_df[[self.key_field] + merge_columns].drop_duplicates(
+                subset=[self.key_field]
+            )
+            return pd.merge(base_df, merge_frame, on=self.key_field, how="left")
 
         # 1. Create initial DataFrame with unique words
         df_original = pd.DataFrame({self.key_field: words})
@@ -94,6 +163,12 @@ class TransformationPipeline:
         logger.info(
             f"Found {len(df_cached)} cached words. Processing {len(new_words)} new words with main transforms."
         )
+        emit(
+            "cache_checked",
+            cached_words=len(df_cached),
+            new_words=len(new_words),
+            total_unique_words=len(unique_words),
+        )
 
         # 4. Process only new words through the *main* pipeline
         if len(new_words) > 0:
@@ -101,7 +176,24 @@ class TransformationPipeline:
 
             # Run each main transformation
             for transform in self.main_transformations:
+                transform_name = type(transform).__name__
+                emit(
+                    "transform_start",
+                    stage="main",
+                    transform_name=transform_name,
+                    input_rows=len(df_new),
+                )
+                transform_started_at = time.perf_counter()
                 df_new = transform.apply(df_new)
+                duration_seconds = time.perf_counter() - transform_started_at
+                emit(
+                    "transform_complete",
+                    stage="main",
+                    transform_name=transform_name,
+                    duration_seconds=duration_seconds,
+                    output_columns=list(df_new.columns),
+                    output_rows=len(df_new),
+                )
 
             # 5. Save new results to cache (DB) in bulk
             logger.debug(f"Saving {len(df_new)} new records to database...")
@@ -121,18 +213,133 @@ class TransformationPipeline:
             logger.info(
                 f"Running LLM transformations on {len(df_processed)} total words..."
             )
-            logger.info(f"LLM transformations to run: {[type(t).__name__ for t in self.llm_transformations]}")
+            logger.info(
+                f"LLM transformations to run: {[type(t).__name__ for t in self.llm_transformations]}"
+            )
+            emit(
+                "llm_stage_start",
+                total_words=len(df_processed),
+                transforms=[type(t).__name__ for t in self.llm_transformations],
+            )
+            independent_llm_transforms: List[Transformation] = []
+            dependent_llm_transforms: List[Transformation] = []
             for llm_transform in self.llm_transformations:
-                transform_name = type(llm_transform).__name__
-                logger.info(f"Running {transform_name}...")
-                # The llm_transform.apply method will handle its own caching
-                # and merge columns back into df_processed
-                df_before = list(df_processed.columns)
-                df_processed = llm_transform.apply(df_processed)
-                df_after = list(df_processed.columns)
-                new_columns = [col for col in df_after if col not in df_before]
-                logger.info(f"{transform_name} complete. New columns: {new_columns}")
+                if (
+                    LLMImageTransformation is not None
+                    and isinstance(llm_transform, LLMImageTransformation)
+                    and not getattr(llm_transform, "requires_master_prompt", False)
+                ):
+                    independent_llm_transforms.append(llm_transform)
+                else:
+                    dependent_llm_transforms.append(llm_transform)
+
+            image_parallel_capable = any(
+                int(getattr(transform, "max_workers", 1) or 1) > 1
+                for transform in independent_llm_transforms
+            )
+            run_parallel_image = (
+                len(independent_llm_transforms) > 0
+                and len(dependent_llm_transforms) > 0
+                and image_parallel_capable
+            )
+
+            if run_parallel_image:
+                logger.info(
+                    f"Starting {len(independent_llm_transforms)} image transform(s) in parallel "
+                    "with other LLM transforms."
+                )
+                image_input_df = df_processed.copy()
+                future_to_transform = {}
+                with ThreadPoolExecutor(
+                    max_workers=max(1, len(independent_llm_transforms))
+                ) as executor:
+                    for independent_transform in independent_llm_transforms:
+                        transform_name = type(independent_transform).__name__
+                        emit(
+                            "transform_start",
+                            stage="llm",
+                            transform_name=transform_name,
+                            input_rows=len(image_input_df),
+                        )
+                        future = executor.submit(
+                            apply_llm_transform, independent_transform, image_input_df.copy()
+                        )
+                        future_to_transform[future] = independent_transform
+
+                    for llm_transform in dependent_llm_transforms:
+                        transform_name = type(llm_transform).__name__
+                        logger.info(f"Running {transform_name}...")
+                        emit(
+                            "transform_start",
+                            stage="llm",
+                            transform_name=transform_name,
+                            input_rows=len(df_processed),
+                        )
+                        df_processed, new_columns, duration_seconds = apply_llm_transform(
+                            llm_transform, df_processed
+                        )
+                        logger.info(f"{transform_name} complete. New columns: {new_columns}")
+                        emit(
+                            "transform_complete",
+                            stage="llm",
+                            transform_name=transform_name,
+                            duration_seconds=duration_seconds,
+                            new_columns=new_columns,
+                            output_rows=len(df_processed),
+                        )
+
+                    for future in as_completed(future_to_transform):
+                        llm_transform = future_to_transform[future]
+                        transform_name = type(llm_transform).__name__
+                        try:
+                            transform_df, new_columns, duration_seconds = future.result()
+                            logger.info(
+                                f"{transform_name} complete (parallel). New columns: {new_columns}"
+                            )
+                            df_processed = merge_llm_output(df_processed, transform_df)
+                            emit(
+                                "transform_complete",
+                                stage="llm",
+                                transform_name=transform_name,
+                                duration_seconds=duration_seconds,
+                                new_columns=new_columns,
+                                output_rows=len(df_processed),
+                            )
+                        except Exception as exc:
+                            logger.error(f"{transform_name} failed in parallel: {exc}")
+                            emit(
+                                "transform_complete",
+                                stage="llm",
+                                transform_name=transform_name,
+                                duration_seconds=0.0,
+                                new_columns=[],
+                                output_rows=len(df_processed),
+                                error=str(exc),
+                            )
+            else:
+                for llm_transform in self.llm_transformations:
+                    transform_name = type(llm_transform).__name__
+                    logger.info(f"Running {transform_name}...")
+                    emit(
+                        "transform_start",
+                        stage="llm",
+                        transform_name=transform_name,
+                        input_rows=len(df_processed),
+                    )
+                    df_processed, new_columns, duration_seconds = apply_llm_transform(
+                        llm_transform, df_processed
+                    )
+                    logger.info(f"{transform_name} complete. New columns: {new_columns}")
+                    emit(
+                        "transform_complete",
+                        stage="llm",
+                        transform_name=transform_name,
+                        duration_seconds=duration_seconds,
+                        new_columns=new_columns,
+                        output_rows=len(df_processed),
+                    )
             logger.info("LLM transformations complete.")
+            emit("llm_stage_complete")
 
         # 8. Merge with original list to preserve order and duplicates
 
@@ -147,6 +354,12 @@ class TransformationPipeline:
         df_final = df_final.drop_duplicates(subset=[self.key_field])
 
         logger.info(f"Pipeline complete. Returning {len(df_final)} records.")
+        emit(
+            "pipeline_complete",
+            total_duration_seconds=time.perf_counter() - pipeline_started_at,
+            output_rows=len(df_final),
+            output_columns=list(df_final.columns),
+        )
         return df_final
 
     def transform_categories(

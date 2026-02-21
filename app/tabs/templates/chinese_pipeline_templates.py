@@ -31,6 +31,13 @@ main:
         </div>
         </div>
 
+        {{#Image}}
+        <div class="extras-group">
+        <div class="extras-header">Image</div>
+        <div class="extras-content">{{Image}}</div>
+        </div>
+        {{/Image}}
+
         <!-- Examples Section (Only shows if fields are not empty) -->
         <div class="examples-container">
         <div class="examples-header">📚 Example Sentences</div>

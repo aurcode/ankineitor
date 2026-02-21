@@ -13,6 +13,10 @@ pydantic
 pydantic-settings
 streamlit
 sqlalchemy
-unstructured[all-docs]
-langchain_groq
+unstructured
+pypdf
+pdf2image
+pytesseract
+google-genai
+google-auth
 python-dotenv

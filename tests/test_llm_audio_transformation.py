@@ -52,6 +52,7 @@ class TestLLMAudioTransformation:
         """Test that the transformation initializes correctly."""
         assert llm_audio_transform.column_name == "sentence_1_audio"
         assert llm_audio_transform.audio_creator is not None
+        assert llm_audio_transform.source_language == "Chinese (Simplified)"
 
     def test_apply_with_sentences(self, llm_audio_transform, sample_df_with_sentences):
         """Test applying transformation to DataFrame with sentences."""
@@ -115,7 +116,7 @@ class TestLLMAudioTransformation:
             result = llm_audio_transform._create_sentence_audio("你好，世界。")
             
             assert result == "/fake/audio/sentence.mp3"
-            mock_create_audio.assert_called_once_with("你好，世界。")
+            mock_create_audio.assert_called_once_with("你好，世界。", language=None)
 
     def test_create_sentence_audio_empty(self, llm_audio_transform):
         """Test audio creation with empty sentence."""
@@ -158,3 +159,31 @@ class TestLLMAudioTransformation:
             
             # Check that audio was created for existing sentences
             assert mock_create_audio.call_count == 2  # Only sentence_1 and sentence_3
+
+    def test_apply_resolves_audio_language_from_source(self, llm_audio_transform):
+        """Test sentence audio uses source-language-specific gTTS code."""
+        llm_audio_transform.source_language = "Spanish"
+        df = pd.DataFrame(
+            {
+                "word": ["hola"],
+                "sentence_1": ["Hola, mundo."],
+                "sentence_2": ["Hola a todos."],
+                "sentence_3": ["Gracias."],
+            }
+        )
+
+        with patch.object(
+            llm_audio_transform.audio_creator,
+            "resolve_tts_language",
+            return_value="es",
+        ) as mock_resolve:
+            with patch.object(
+                llm_audio_transform.audio_creator, "_create_audio"
+            ) as mock_create_audio:
+                mock_create_audio.return_value = "/fake/audio/path.mp3"
+                _ = llm_audio_transform.apply(df)
+
+                mock_resolve.assert_called_once_with("Spanish")
+                assert mock_create_audio.call_count == 3
+                for call in mock_create_audio.call_args_list:
+                    assert call.kwargs.get("language") == "es"

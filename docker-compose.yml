@@ -3,12 +3,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - ./.env
+    ports:
+      - "8502:8501"
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data # persists both SQLite DBs in /app/data
       - ./media:/app/media
       - ./output:/app/output
       - ./logs:/app/logs
       - ./my_audio_files:/app/my_audio_files
+      - ./my_image_files:/app/my_image_files
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false

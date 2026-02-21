@@ -39,6 +39,19 @@ class LlmInference(Base):
     meaning_spanish = Column(Text)
 
 
+class ImagePromptInference(Base):
+    """Maps to the 'image_prompt_inference' table."""
+
+    __tablename__ = "image_prompt_inference"
+
+    word = Column(String, primary_key=True)
+    source_word = Column(String)
+    image_term_type = Column(String)
+    visual_description = Column(Text)
+    master_image_prompt = Column(Text)
+    image_generation_skip_reason = Column(Text)
+
+
 class HanziProcessing(Base):
     """Maps to the 'hanzi_processing' table."""
 
@@ -80,6 +93,7 @@ class SQLAlchemyClient:
             # Map table names (from processor) to their Model classes
             self._model_map: Dict[str, Type[Base]] = {
                 "llm_inference": LlmInference,
+                "image_prompt_inference": ImagePromptInference,
                 "hanzi_processing": HanziProcessing,
             }
             logger.info(f"Connected to SQLAlchemy database at '{db_path}'.")
