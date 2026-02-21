@@ -66,7 +66,7 @@ def get_dependencies():
         # Ordered logically: basic transformations first, then LLM, then audio for LLM sentences last
         all_transforms = {
             "Pinyin": PinyinTransformation(),
-            "Translation (to ES)": TranslationTransformation(
+            "Translation (Legacy Google/CEDICT)": TranslationTransformation(
                 lan_in="zh-CN", lan_out="es"
             ),
             "Audio": AudioTransformation(audio_creator=audio_creator),

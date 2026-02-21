@@ -2,6 +2,7 @@ import pandas as pd
 from typing import Optional
 from loguru import logger
 from tqdm import tqdm
+import re
 
 from .transformations import Transformation
 from .audio_creator import AudioCreator
@@ -10,7 +11,7 @@ from .audio_creator import AudioCreator
 class LLMAudioTransformation(Transformation):
     """
     Creates audio files for LLM-generated example sentences.
-    Adds audio columns for each example sentence (sentence_1, sentence_2, sentence_3).
+    Adds audio columns for each detected sentence column (sentence_1..sentence_N).
     """
 
     def __init__(
@@ -28,14 +29,19 @@ class LLMAudioTransformation(Transformation):
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Applies audio generation to LLM example sentences.
-        Creates audio files for sentence_1, sentence_2, and sentence_3 columns.
+        Creates audio files for all sentence_{n} columns found in the DataFrame.
         """
         logger.info("Applying LLM Audio transformation...")
         logger.info(f"Input DataFrame columns: {list(df.columns)}")
         
-        # Check if required sentence columns exist
-        sentence_columns = ["sentence_1", "sentence_2", "sentence_3"]
-        available_sentences = [col for col in sentence_columns if col in df.columns]
+        # Dynamically detect sentence columns: sentence_1, sentence_2, ..., sentence_N
+        sentence_pattern = re.compile(r"^sentence_(\d+)$")
+        matched_pairs = []
+        for column in df.columns:
+            match = sentence_pattern.match(str(column))
+            if match:
+                matched_pairs.append((int(match.group(1)), column))
+        available_sentences = [column for _, column in sorted(matched_pairs, key=lambda x: x[0])]
         
         if not available_sentences:
             logger.warning("No LLM sentence columns found. Skipping LLM audio generation.")

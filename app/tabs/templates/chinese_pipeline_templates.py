@@ -99,6 +99,69 @@ main:
         </div>
         {{/Example 3}}
 
+        {{#All Sentences}}
+        <div class="extras-group">
+        <div class="extras-header">All Generated Sentences</div>
+        <div class="extras-content">{{All Sentences}}</div>
+        </div>
+        {{/All Sentences}}
+
+        {{#Part of Speech}}
+        <div class="extras-group">
+        <div class="extras-header">Part of Speech</div>
+        <div class="extras-content">{{Part of Speech}}</div>
+        </div>
+        {{/Part of Speech}}
+
+        {{#Character Breakdown}}
+        <div class="extras-group">
+        <div class="extras-header">Character Breakdown</div>
+        <div class="extras-content">{{Character Breakdown}}</div>
+        </div>
+        {{/Character Breakdown}}
+
+        {{#Detailed Explanation (EN)}}
+        <div class="extras-group">
+        <div class="extras-header">Detailed Explanation (EN)</div>
+        <div class="extras-content">{{Detailed Explanation (EN)}}</div>
+        </div>
+        {{/Detailed Explanation (EN)}}
+
+        {{#Detailed Explanation (ES)}}
+        <div class="extras-group">
+        <div class="extras-header">Detailed Explanation (ES)</div>
+        <div class="extras-content">{{Detailed Explanation (ES)}}</div>
+        </div>
+        {{/Detailed Explanation (ES)}}
+
+        {{#Synonyms}}
+        <div class="extras-group">
+        <div class="extras-header">Synonyms</div>
+        <div class="extras-content">{{Synonyms}}</div>
+        </div>
+        {{/Synonyms}}
+
+        {{#Antonyms}}
+        <div class="extras-group">
+        <div class="extras-header">Antonyms</div>
+        <div class="extras-content">{{Antonyms}}</div>
+        </div>
+        {{/Antonyms}}
+
+        {{#Collocations}}
+        <div class="extras-group">
+        <div class="extras-header">Collocations</div>
+        <div class="extras-content">{{Collocations}}</div>
+        </div>
+        {{/Collocations}}
+
+        {{#Edge Case Notes}}
+        <div class="extras-group">
+        <div class="extras-header">Edge Case Notes</div>
+        <div class="extras-content">{{Edge Case Notes}}</div>
+        </div>
+        {{/Edge Case Notes}}
+
         {{#Translation (Extras)}}
         <div id="char_extras" class="extras-group">
         <div class="extras-header">Translations / Notes</div>

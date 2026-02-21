@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     ]
     llm_image_model: str = "gemini-3-pro-image-preview"
     llm_image_max_workers: int = 1
+    llm_profile_id: str = "lotm_zh_en_es"
+    llm_profile_db_isolation: bool = True
     llm_source_language: str = "Chinese (Simplified)"
     llm_target_language: str = "english"
     llm_secondary_target_language: Optional[str] = None

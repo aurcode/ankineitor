@@ -13,9 +13,14 @@ from ankineitor.pipeline.llm_image_prompt_transformation import (
     LLMImagePromptTransformation,
 )
 from ankineitor.pipeline.llm_image_transformation import LLMImageTransformation
+from ankineitor.pipeline.llm_profiles import (
+    DEFAULT_LLM_PROFILE_ID,
+    get_llm_profile,
+    list_llm_profiles,
+)
 from ankineitor.security import validate_word_input, ValidationError
 
-POPULAR_LANGUAGE_OPTIONS = [
+SOURCE_LANGUAGE_OPTIONS = [
     "English",
     "Spanish",
     "French",
@@ -32,10 +37,10 @@ POPULAR_LANGUAGE_OPTIONS = [
     "Vietnamese",
     "Indonesian",
 ]
-SOURCE_LANGUAGE_OPTIONS = POPULAR_LANGUAGE_OPTIONS
+LLM_PROFILE_OPTIONS = [profile.profile_id for profile in list_llm_profiles()]
 
 
-def _coerce_language_option(value, options, fallback):
+def _coerce_option(value, options, fallback):
     """Map persisted/free-text values to one of the allowed options."""
     if value is None:
         return fallback
@@ -55,6 +60,11 @@ def _language_label(value):
     if value is None:
         return "None"
     return value
+
+
+def _profile_label(profile_id: str) -> str:
+    profile = get_llm_profile(profile_id)
+    return profile.display_name
 
 
 def _render_image_preview(df_results: pd.DataFrame) -> None:
@@ -150,7 +160,14 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
 
     # Persist core pipeline inputs across reruns.
     if "pipeline_selected_transform_names" not in st.session_state:
-        st.session_state["pipeline_selected_transform_names"] = transform_names.copy()
+        default_selected = [
+            name
+            for name in transform_names
+            if name != "Translation (Legacy Google/CEDICT)"
+        ]
+        st.session_state["pipeline_selected_transform_names"] = (
+            default_selected if default_selected else transform_names.copy()
+        )
     else:
         st.session_state["pipeline_selected_transform_names"] = [
             name
@@ -191,8 +208,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
             for name in selected_transform_names
         )
         llm_source_language = "Chinese (Simplified)"
-        llm_target_language = "English"
-        llm_secondary_target_language = None
+        llm_profile_id = DEFAULT_LLM_PROFILE_ID
 
         if has_source_language_transform:
             st.subheader("Source Language")
@@ -201,7 +217,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
                 "If you choose another source language, pinyin is disabled and audio uses that language."
             )
 
-            default_source = _coerce_language_option(
+            default_source = _coerce_option(
                 st.session_state.get("llm_source_language_ui"),
                 SOURCE_LANGUAGE_OPTIONS,
                 "Chinese (Simplified)",
@@ -215,48 +231,26 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
             st.session_state["llm_source_language_ui"] = llm_source_language
 
         if has_llm_text_transform:
-            st.subheader("LLM Target Languages")
+            st.subheader("LLM Profile")
             st.caption(
-                "These settings apply to non-Chinese words. Chinese words always output English + Spanish. "
-                "Language choices are limited to common/popular languages."
+                "Select a profile that defines the full prompt and output structure "
+                "for LLM text generation."
             )
 
-            default_target = _coerce_language_option(
-                st.session_state.get("llm_target_language_ui"),
-                POPULAR_LANGUAGE_OPTIONS,
-                "English",
+            default_profile = _coerce_option(
+                st.session_state.get("llm_profile_id_ui"),
+                LLM_PROFILE_OPTIONS,
+                DEFAULT_LLM_PROFILE_ID,
             )
-            llm_target_language = st.selectbox(
-                "Primary target language",
-                options=POPULAR_LANGUAGE_OPTIONS,
-                index=POPULAR_LANGUAGE_OPTIONS.index(default_target),
-                format_func=_language_label,
+            llm_profile_id = st.selectbox(
+                "Profile",
+                options=LLM_PROFILE_OPTIONS,
+                index=LLM_PROFILE_OPTIONS.index(default_profile),
+                format_func=_profile_label,
             )
-
-            secondary_options = [None] + [
-                language
-                for language in POPULAR_LANGUAGE_OPTIONS
-                if language != llm_target_language
-            ]
-            persisted_secondary = st.session_state.get("llm_secondary_target_language_ui")
-            if persisted_secondary in ("", llm_target_language):
-                persisted_secondary = None
-            default_secondary = _coerce_language_option(
-                persisted_secondary,
-                secondary_options,
-                None,
-            )
-            llm_secondary_target_language = st.selectbox(
-                "Secondary target language (optional)",
-                options=secondary_options,
-                index=secondary_options.index(default_secondary),
-                format_func=_language_label,
-            )
-
-            st.session_state["llm_target_language_ui"] = llm_target_language
-            st.session_state["llm_secondary_target_language_ui"] = (
-                llm_secondary_target_language
-            )
+            selected_profile = get_llm_profile(llm_profile_id)
+            st.caption(selected_profile.description)
+            st.session_state["llm_profile_id_ui"] = llm_profile_id
 
     with col2:
         st.subheader("2. Input Words")
@@ -303,8 +297,8 @@ def render_pipeline_tab(pipeline_db_client, all_transformations):
                         if hasattr(transform, "source_language"):
                             transform.source_language = llm_source_language
                         if isinstance(transform, LLMTransformation):
-                            transform.target_language = llm_target_language
-                            transform.secondary_target_language = llm_secondary_target_language
+                            transform.profile_id = llm_profile_id
+                            transform.profile = get_llm_profile(llm_profile_id)
 
                     # Initialize the pipeline
                     pipeline = TransformationPipeline(

@@ -1,11 +1,12 @@
 import os
 import json
+import re
 from loguru import logger
 from typing import Optional, Dict, Any, List, Type, Generator
 from contextlib import contextmanager
 
 # SQLAlchemy Imports
-from sqlalchemy import create_engine, Column, String, Text, select, func, delete
+from sqlalchemy import create_engine, Column, String, Text, select, func, delete, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -37,6 +38,23 @@ class LlmInference(Base):
     sentence_3 = Column(Text)
     meaning_english = Column(Text)
     meaning_spanish = Column(Text)
+    profile_id = Column(String)
+    profile_version = Column(String)
+    word_model = Column(String)
+    pinyin = Column(Text)
+    part_of_speech = Column(Text)
+    character_breakdown = Column(Text)
+    detailed_explanation_english = Column(Text)
+    detailed_explanation_spanish = Column(Text)
+    edge_case_notes = Column(Text)
+    synonyms_json = Column(Text)
+    antonyms_json = Column(Text)
+    collocations_json = Column(Text)
+    sentences_json = Column(Text)
+    synonyms_rendered = Column(Text)
+    antonyms_rendered = Column(Text)
+    collocations_rendered = Column(Text)
+    sentences_rendered_html = Column(Text)
 
 
 class ImagePromptInference(Base):
@@ -89,6 +107,7 @@ class SQLAlchemyClient:
 
             # Create tables if they don't exist
             Base.metadata.create_all(self.engine)
+            self._run_schema_migrations()
 
             # Map table names (from processor) to their Model classes
             self._model_map: Dict[str, Type[Base]] = {
@@ -100,6 +119,56 @@ class SQLAlchemyClient:
         except SQLAlchemyError as e:
             logger.critical(f"Error connecting to SQLAlchemy database: {e}")
             raise
+
+    def _run_schema_migrations(self) -> None:
+        """Apply lightweight additive migrations for SQLite tables."""
+        if self.engine.url.get_backend_name() != "sqlite":
+            return
+
+        self._ensure_sqlite_columns(
+            table_name="llm_inference",
+            columns={
+                "profile_id": "TEXT",
+                "profile_version": "TEXT",
+                "word_model": "TEXT",
+                "pinyin": "TEXT",
+                "part_of_speech": "TEXT",
+                "character_breakdown": "TEXT",
+                "detailed_explanation_english": "TEXT",
+                "detailed_explanation_spanish": "TEXT",
+                "edge_case_notes": "TEXT",
+                "synonyms_json": "TEXT",
+                "antonyms_json": "TEXT",
+                "collocations_json": "TEXT",
+                "sentences_json": "TEXT",
+                "synonyms_rendered": "TEXT",
+                "antonyms_rendered": "TEXT",
+                "collocations_rendered": "TEXT",
+                "sentences_rendered_html": "TEXT",
+            },
+        )
+
+    def _ensure_sqlite_columns(self, table_name: str, columns: Dict[str, str]) -> None:
+        """Add missing columns to SQLite tables using ALTER TABLE ADD COLUMN."""
+        identifier_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        if not identifier_pattern.match(table_name):
+            raise ValueError(f"Unsafe table name for migration: {table_name}")
+
+        with self.engine.begin() as conn:
+            existing = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+            existing_names = {row[1] for row in existing}
+
+            for col_name, col_type in columns.items():
+                if not identifier_pattern.match(col_name):
+                    raise ValueError(f"Unsafe column name for migration: {col_name}")
+                if col_name in existing_names:
+                    continue
+                conn.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
+                )
+                logger.info(
+                    f"Schema migration: added column '{col_name}' to '{table_name}'."
+                )
 
     @contextmanager
     def _get_session(self) -> Generator[Session, None, None]:

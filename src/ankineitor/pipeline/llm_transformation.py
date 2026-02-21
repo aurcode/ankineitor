@@ -1,9 +1,8 @@
 import json
 import hashlib
 import re
-import unicodedata
 from pathlib import Path
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 import google.auth as google_auth
 import pandas as pd
@@ -18,6 +17,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
 from .db_client import SQLAlchemyClient
+from .llm_profiles import get_llm_profile
 from .transformations import Transformation
 from ..config import get_settings
 from ..security.exceptions import ValidationError
@@ -25,22 +25,36 @@ from ..security.exceptions import ValidationError
 load_dotenv()
 
 
-class ExampleSentences(BaseModel):
-    """Structured model for example sentences."""
+class SentencePayload(BaseModel):
+    """Structured sentence entry for profile-based output."""
 
-    sentence_1: str = Field(description="The first example sentence.")
-    sentence_2: str = Field(description="The second example sentence.")
-    sentence_3: str = Field(description="The third example sentence.")
-
-
-class WordMeaning(BaseModel):
-    """Structured model for word meanings."""
-
-    english: str = Field(description="The meaning of the word in English.")
-    spanish: str = Field(
-        default="",
-        description="Secondary meaning value. For Chinese this is Spanish.",
+    target_language_highlighted: str = Field(
+        description="Sentence containing the highlighted target word."
     )
+    target_language_cloze: str = Field(
+        description="Same sentence with the target word replaced by blanks."
+    )
+    sentence_pinyin: str = Field(description="Full pinyin for the sentence.")
+    translation_english: str = Field(description="Natural English sentence translation.")
+    translation_spanish: str = Field(
+        default="", description="Natural Spanish sentence translation."
+    )
+
+
+class LLMWordPayload(BaseModel):
+    """Structured profile output for a single target word."""
+
+    word: str
+    pinyin: str
+    part_of_speech: str
+    character_breakdown: str
+    detailed_explanation_english: str
+    detailed_explanation_spanish: str = ""
+    synonyms: List[str] = Field(default_factory=list)
+    antonyms: List[str] = Field(default_factory=list)
+    collocations: List[str] = Field(default_factory=list)
+    edge_case_notes: str = ""
+    sentences: List[SentencePayload] = Field(default_factory=list)
 
 
 def _normalize_token(raw_token: Optional[str]) -> Optional[str]:
@@ -79,34 +93,6 @@ def _resolve_model_name(model_name: str) -> str:
     return cleaned or "gemini-3-flash-preview"
 
 
-_CHINESE_CHAR_PATTERN = re.compile(r"[\u4e00-\u9fff]")
-
-
-def _contains_chinese_characters(text: str) -> bool:
-    return bool(_CHINESE_CHAR_PATTERN.search(text))
-
-
-def _normalize_language_name(language: Optional[str]) -> str:
-    if not language:
-        return ""
-    normalized = unicodedata.normalize("NFKD", language)
-    normalized = normalized.encode("ascii", "ignore").decode("ascii")
-    normalized = normalized.lower().strip()
-    for token in ("_", "-", " "):
-        normalized = normalized.replace(token, "")
-    return normalized
-
-
-def _language_is_english(language: Optional[str]) -> bool:
-    normalized = _normalize_language_name(language)
-    return normalized in {"en", "eng", "english"}
-
-
-def _language_is_spanish(language: Optional[str]) -> bool:
-    normalized = _normalize_language_name(language)
-    return normalized in {"es", "spa", "spanish", "espanol"}
-
-
 class LLMTransformation(Transformation):
     """
     Processes words using Gemini and caches results in a separate database.
@@ -126,22 +112,50 @@ class LLMTransformation(Transformation):
 
         settings = get_settings()
         self.model_name = _resolve_model_name(settings.llm_model)
-        self.source_language = (
-            (settings.llm_source_language or "auto").strip() or "auto"
+        self.profile_id = (getattr(settings, "llm_profile_id", None) or "").strip()
+        self.profile = get_llm_profile(self.profile_id)
+        self.llm_cache_db_path = (
+            (getattr(settings, "llm_cache_db_path", None) or "").strip()
+            or "data/ankineitor_llm_cache.db"
         )
-        self.target_language = (
-            (settings.llm_target_language or "english").strip() or "english"
+        self.profile_db_isolation_enabled = bool(
+            getattr(settings, "llm_profile_db_isolation", True)
         )
-        secondary_target = settings.llm_secondary_target_language
-        self.secondary_target_language = (
-            secondary_target.strip() if secondary_target and secondary_target.strip() else None
-        )
+        self._profile_db_clients: Dict[str, SQLAlchemyClient] = {}
         self.location = settings.gcp_location
         self.project_id = settings.gcp_project_id
         self.credentials_path = settings.vertex_credentials_path or settings.bq_credentials_path
         self.api_token = _normalize_token(api_key or settings.resolve_llm_api_token())
         # Backward compatible attribute name used in tests/callers.
         self.api_key = self.api_token
+
+        # Cache schema columns for table `llm_inference`.
+        self._cache_columns = [
+            "profile_id",
+            "profile_version",
+            "word_model",
+            "pinyin",
+            "part_of_speech",
+            "character_breakdown",
+            "detailed_explanation_english",
+            "detailed_explanation_spanish",
+            "edge_case_notes",
+            "synonyms_json",
+            "antonyms_json",
+            "collocations_json",
+            "sentences_json",
+            "synonyms_rendered",
+            "antonyms_rendered",
+            "collocations_rendered",
+            "sentences_rendered_html",
+            "example_sentences",
+            "improved_meaning",
+            "sentence_1",
+            "sentence_2",
+            "sentence_3",
+            "meaning_english",
+            "meaning_spanish",
+        ]
 
         try:
             self.client = self._build_genai_client()
@@ -284,152 +298,275 @@ class LLMTransformation(Transformation):
         payload = self._extract_json_payload(text)
         return response_model.model_validate(payload)
 
-    def _resolve_language_profile(self, word: str) -> Dict[str, Optional[str]]:
-        if _contains_chinese_characters(word):
-            # Chinese is always fixed to EN + ES per product requirement.
-            return {
-                "is_chinese": True,
-                "source_language": "Simplified Chinese",
-                "sentence_language": "Simplified Chinese",
-                "primary_target_language": "English",
-                "secondary_target_language": "Spanish",
-                "profile_name": "zh_fixed",
-            }
+    def _resolve_profile(self, word: str):
+        del word
+        return get_llm_profile(self.profile_id)
 
-        source_language = self.source_language
-        sentence_language = (
-            "the same language as the input word"
-            if _normalize_language_name(source_language) in {"", "auto"}
-            else source_language
+    def _sanitize_profile_id_for_filename(self, profile_id: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9_-]+", "_", (profile_id or "").strip().lower())
+        safe = safe.strip("_")
+        return safe or "default"
+
+    def _build_profile_db_path(self, profile_id: str) -> str:
+        base = Path(self.llm_cache_db_path)
+        safe_profile = self._sanitize_profile_id_for_filename(profile_id)
+        suffix = "".join(base.suffixes) or ".db"
+        stem = base.name[: -len(suffix)] if suffix and base.name.endswith(suffix) else base.stem
+        filename = f"{stem}__{safe_profile}{suffix}"
+        return str(base.with_name(filename))
+
+    def _get_active_profile_db_client(self) -> SQLAlchemyClient:
+        if not self.profile_db_isolation_enabled:
+            return self.db_client
+
+        # Keep test mocks and non-standard db clients backward compatible.
+        if not isinstance(self.db_client, SQLAlchemyClient):
+            return self.db_client
+
+        profile_key = self.profile.profile_id
+        if profile_key in self._profile_db_clients:
+            return self._profile_db_clients[profile_key]
+
+        db_path = self._build_profile_db_path(profile_key)
+        client = SQLAlchemyClient(db_path=db_path)
+        self._profile_db_clients[profile_key] = client
+        logger.info(
+            "LLMTransformation profile DB selected: profile='{}' db='{}'",
+            profile_key,
+            db_path,
         )
-        return {
-            "is_chinese": False,
-            "source_language": source_language,
-            "sentence_language": sentence_language,
-            "primary_target_language": self.target_language,
-            "secondary_target_language": self.secondary_target_language,
-            "profile_name": "generic",
-        }
+        return client
 
-    def _build_cache_key_word(self, word: str, profile: Dict[str, Optional[str]]) -> str:
-        cache_scope = "|".join(
+    def _build_cache_key_word(self, word: str) -> str:
+        scope = "|".join(
             [
                 self.model_name,
-                profile.get("profile_name") or "generic",
-                profile.get("source_language") or "",
-                profile.get("sentence_language") or "",
-                profile.get("primary_target_language") or "",
-                profile.get("secondary_target_language") or "",
+                self.profile.profile_id,
+                self.profile.prompt_version,
             ]
         )
-        cache_hash = hashlib.sha256(cache_scope.encode("utf-8")).hexdigest()[:12]
+        cache_hash = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:12]
         return f"{cache_hash}::{word}"
 
-    def _build_sentence_prompt(self, word: str, profile: Dict[str, Optional[str]]) -> str:
-        sentence_language = profile.get("sentence_language") or "the same language as the input word"
-        return (
-            "Return a JSON object with keys sentence_1, sentence_2, sentence_3.\n"
-            f"Generate 3 concise example sentences using the word '{word}'.\n"
-            f"Use only {sentence_language} in the sentence values.\n"
-            "Do not include translations, romanization, or explanations in the values."
+    def _build_profile_prompt(self, word: str) -> str:
+        return self.profile.render_prompt(word)
+
+    def _as_clean_list(self, items: List[str]) -> List[str]:
+        cleaned: List[str] = []
+        for item in items or []:
+            value = str(item).strip()
+            if value:
+                cleaned.append(value)
+        return cleaned
+
+    def _build_translation_extras(
+        self,
+        detailed_en: Optional[str],
+        detailed_es: Optional[str],
+        part_of_speech: Optional[str],
+        character_breakdown: Optional[str],
+        edge_case_notes: Optional[str],
+    ) -> Optional[str]:
+        lines: List[str] = []
+        if detailed_en:
+            lines.append(f"EN: {detailed_en}")
+        if detailed_es:
+            lines.append(f"ES: {detailed_es}")
+        if part_of_speech:
+            lines.append(f"POS: {part_of_speech}")
+        if character_breakdown:
+            lines.append(f"Breakdown: {character_breakdown}")
+        if edge_case_notes:
+            lines.append(f"Notes: {edge_case_notes}")
+        return "\n".join(lines) if lines else None
+
+    def _build_sentences_rendered_html(self, sentences: List[SentencePayload]) -> Optional[str]:
+        if not sentences:
+            return None
+
+        lines: List[str] = ["<ol>"]
+        for sentence in sentences:
+            highlighted = sentence.target_language_highlighted.strip()
+            pinyin = sentence.sentence_pinyin.strip()
+            trans_en = sentence.translation_english.strip()
+            trans_es = sentence.translation_spanish.strip()
+
+            lines.append("<li>")
+            lines.append(highlighted)
+            if pinyin:
+                lines.append(f"<br><i>{pinyin}</i>")
+            if trans_en:
+                lines.append(f"<br>EN: {trans_en}")
+            if trans_es:
+                lines.append(f"<br>ES: {trans_es}")
+            lines.append("</li>")
+
+        lines.append("</ol>")
+        return "".join(lines)
+
+    def _payload_to_result(self, safe_word: str, payload_obj: LLMWordPayload) -> Dict[str, Optional[str]]:
+        normalized_word = (payload_obj.word or "").strip() or safe_word
+        pinyin_value = (payload_obj.pinyin or "").strip() or None
+        part_of_speech = (payload_obj.part_of_speech or "").strip() or None
+        character_breakdown = (payload_obj.character_breakdown or "").strip() or None
+        detailed_en = (payload_obj.detailed_explanation_english or "").strip() or None
+        detailed_es = (payload_obj.detailed_explanation_spanish or "").strip() or None
+        edge_case_notes = (payload_obj.edge_case_notes or "").strip() or None
+
+        synonyms = self._as_clean_list(payload_obj.synonyms)
+        antonyms = self._as_clean_list(payload_obj.antonyms)
+        collocations = self._as_clean_list(payload_obj.collocations)
+        sentences = payload_obj.sentences or []
+
+        sentences_json = json.dumps(
+            [s.model_dump() for s in sentences], ensure_ascii=False
         )
+        payload_json = json.dumps(payload_obj.model_dump(), ensure_ascii=False)
 
-    def _build_meaning_prompt(self, word: str, profile: Dict[str, Optional[str]]) -> str:
-        primary_target = profile.get("primary_target_language") or "English"
-        secondary_target = profile.get("secondary_target_language")
-
-        if secondary_target:
-            return (
-                "Return a JSON object with keys english and spanish.\n"
-                f"Provide a concise meaning for the word '{word}' in {primary_target} and {secondary_target}.\n"
-                f"Put the {primary_target} meaning in key 'english'.\n"
-                f"Put the {secondary_target} meaning in key 'spanish'."
-            )
-
-        return (
-            "Return a JSON object with keys english and spanish.\n"
-            f"Provide a concise meaning for the word '{word}' in {primary_target}.\n"
-            f"Put the {primary_target} meaning in key 'english'.\n"
-            "Set key 'spanish' to an empty string."
-        )
-
-    def _map_meanings(
-        self, profile: Dict[str, Optional[str]], meaning_obj: WordMeaning
-    ) -> Dict[str, Optional[str]]:
-        primary_meaning = (meaning_obj.english or "").strip()
-        secondary_meaning = (meaning_obj.spanish or "").strip() or None
-
-        # Chinese flow remains EN + ES exactly as before.
-        if profile.get("is_chinese"):
-            return {
-                "meaning_english": primary_meaning or None,
-                "meaning_spanish": secondary_meaning,
-            }
-
-        primary_target = profile.get("primary_target_language")
-        secondary_target = profile.get("secondary_target_language")
-
-        meaning_english = None
-        meaning_spanish = None
-
-        if _language_is_english(primary_target):
-            meaning_english = primary_meaning or None
-        if _language_is_spanish(primary_target):
-            meaning_spanish = primary_meaning or None
-
-        if _language_is_english(secondary_target) and secondary_meaning:
-            meaning_english = secondary_meaning
-        if _language_is_spanish(secondary_target) and secondary_meaning:
-            meaning_spanish = secondary_meaning
-
-        # Backward-compatible fallback: keep primary output in meaning_english.
-        if not meaning_english and primary_meaning:
-            meaning_english = primary_meaning
-        if not meaning_spanish and secondary_meaning:
-            meaning_spanish = secondary_meaning
-
-        return {
-            "meaning_english": meaning_english,
-            "meaning_spanish": meaning_spanish,
+        result: Dict[str, Optional[str]] = {
+            "word": safe_word,
+            "word_model": normalized_word,
+            "profile_id": self.profile.profile_id,
+            "profile_version": self.profile.prompt_version,
+            "pinyin": pinyin_value,
+            "part_of_speech": part_of_speech,
+            "character_breakdown": character_breakdown,
+            "detailed_explanation_english": detailed_en,
+            "detailed_explanation_spanish": detailed_es,
+            # Keep legacy meaning columns for existing templates.
+            "meaning_english": detailed_en,
+            "meaning_spanish": detailed_es,
+            "edge_case_notes": edge_case_notes,
+            "synonyms_json": json.dumps(synonyms, ensure_ascii=False),
+            "antonyms_json": json.dumps(antonyms, ensure_ascii=False),
+            "collocations_json": json.dumps(collocations, ensure_ascii=False),
+            "sentences_json": sentences_json,
+            "synonyms_rendered": " | ".join(synonyms) if synonyms else None,
+            "antonyms_rendered": " | ".join(antonyms) if antonyms else None,
+            "collocations_rendered": " | ".join(collocations) if collocations else None,
+            "sentences_rendered_html": self._build_sentences_rendered_html(sentences),
+            "translation": self._build_translation_extras(
+                detailed_en=detailed_en,
+                detailed_es=detailed_es,
+                part_of_speech=part_of_speech,
+                character_breakdown=character_breakdown,
+                edge_case_notes=edge_case_notes,
+            ),
+            # Existing llm cache columns.
+            "example_sentences": sentences_json,
+            "improved_meaning": payload_json,
         }
 
-    def process_word(self, word: str) -> Optional[Dict[str, str]]:
+        for idx, sentence in enumerate(sentences, start=1):
+            result[f"sentence_{idx}"] = (
+                sentence.target_language_highlighted.strip() or None
+            )
+            result[f"sentence_{idx}_cloze"] = (
+                sentence.target_language_cloze.strip() or None
+            )
+            result[f"sentence_{idx}_pinyin"] = sentence.sentence_pinyin.strip() or None
+            result[f"sentence_{idx}_translation_english"] = (
+                sentence.translation_english.strip() or None
+            )
+            result[f"sentence_{idx}_translation_spanish"] = (
+                sentence.translation_spanish.strip() or None
+            )
+
+        return result
+
+    def _cache_record_from_result(
+        self,
+        cache_key_word: str,
+        result: Dict[str, Optional[str]],
+    ) -> Dict[str, Optional[str]]:
+        return {
+            "word": cache_key_word,
+            "profile_id": result.get("profile_id"),
+            "profile_version": result.get("profile_version"),
+            "word_model": result.get("word_model"),
+            "pinyin": result.get("pinyin"),
+            "part_of_speech": result.get("part_of_speech"),
+            "character_breakdown": result.get("character_breakdown"),
+            "detailed_explanation_english": result.get("detailed_explanation_english"),
+            "detailed_explanation_spanish": result.get("detailed_explanation_spanish"),
+            "edge_case_notes": result.get("edge_case_notes"),
+            "synonyms_json": result.get("synonyms_json"),
+            "antonyms_json": result.get("antonyms_json"),
+            "collocations_json": result.get("collocations_json"),
+            "sentences_json": result.get("sentences_json"),
+            "synonyms_rendered": result.get("synonyms_rendered"),
+            "antonyms_rendered": result.get("antonyms_rendered"),
+            "collocations_rendered": result.get("collocations_rendered"),
+            "sentences_rendered_html": result.get("sentences_rendered_html"),
+            "example_sentences": result.get("example_sentences"),
+            "improved_meaning": result.get("improved_meaning"),
+            "sentence_1": result.get("sentence_1"),
+            "sentence_2": result.get("sentence_2"),
+            "sentence_3": result.get("sentence_3"),
+            "meaning_english": result.get("meaning_english"),
+            "meaning_spanish": result.get("meaning_spanish"),
+        }
+
+    def _result_from_cached_record(
+        self,
+        safe_word: str,
+        existing_record: Dict[str, Any],
+    ) -> Optional[Dict[str, Optional[str]]]:
+        payload_json = existing_record.get("improved_meaning")
+        if isinstance(payload_json, str) and payload_json.strip().startswith("{"):
+            try:
+                payload = LLMWordPayload.model_validate(json.loads(payload_json))
+                result = self._payload_to_result(safe_word, payload)
+                result["word"] = safe_word
+                return result
+            except Exception as exc:
+                logger.debug(
+                    f"Failed to hydrate profile payload for '{safe_word}' from cache: {exc}"
+                )
+
+        # Fallback for legacy cache rows.
+        if existing_record.get("sentence_1") and existing_record.get("meaning_english"):
+            return {
+                "word": safe_word,
+                "sentence_1": existing_record.get("sentence_1"),
+                "sentence_2": existing_record.get("sentence_2"),
+                "sentence_3": existing_record.get("sentence_3"),
+                "meaning_english": existing_record.get("meaning_english"),
+                "meaning_spanish": existing_record.get("meaning_spanish"),
+                "example_sentences": existing_record.get("example_sentences"),
+                "improved_meaning": existing_record.get("improved_meaning"),
+            }
+        return None
+
+    def process_word(self, word: str) -> Optional[Dict[str, Optional[str]]]:
         if not word or not word.strip():
             logger.warning("Skipping empty word in LLM transformation.")
             return None
 
         safe_word = word.strip()
-        profile = self._resolve_language_profile(safe_word)
-        cache_key_word = self._build_cache_key_word(safe_word, profile)
+        self.profile = self._resolve_profile(safe_word)
+        db_client = self._get_active_profile_db_client()
+        cache_key_word = self._build_cache_key_word(safe_word)
         logger.debug(
-            "LLM processing word: {word} (source={source}, targets={primary}/{secondary})".format(
+            "LLM processing word: {word} (profile={profile})".format(
                 word=safe_word,
-                source=profile.get("source_language"),
-                primary=profile.get("primary_target_language"),
-                secondary=profile.get("secondary_target_language") or "-",
+                profile=self.profile.display_name,
             )
         )
 
         try:
-            existing_record = self.db_client.find_record(
+            existing_record = db_client.find_record(
                 key=cache_key_word,
                 table_name=self.table_name,
                 field_name=self.field_name,
             )
-            if (
-                existing_record
-                and existing_record.get("sentence_1")
-                and existing_record.get("meaning_english")
-            ):
-                logger.debug(f"Skipping LLM for '{safe_word}': found complete data in cache.")
-                return {
-                    "word": safe_word,
-                    "sentence_1": existing_record.get("sentence_1"),
-                    "sentence_2": existing_record.get("sentence_2"),
-                    "sentence_3": existing_record.get("sentence_3"),
-                    "meaning_english": existing_record.get("meaning_english"),
-                    "meaning_spanish": existing_record.get("meaning_spanish"),
-                }
+            if existing_record:
+                cached_result = self._result_from_cached_record(safe_word, existing_record)
+                if cached_result is not None:
+                    logger.debug(
+                        f"Skipping LLM for '{safe_word}': found profile data in cache."
+                    )
+                    return cached_result
         except Exception as exc:
             logger.error(f"Error checking LLM cache for word '{safe_word}': {exc}")
 
@@ -439,37 +576,19 @@ class LLMTransformation(Transformation):
                 wait=wait_exponential(multiplier=1, min=2, max=10),
                 reraise=True,
             )
-            def get_sentences() -> ExampleSentences:
+            def get_payload() -> LLMWordPayload:
                 result = self._generate_structured_output(
-                    self._build_sentence_prompt(safe_word, profile), ExampleSentences
+                    self._build_profile_prompt(safe_word), LLMWordPayload
                 )
-                return ExampleSentences.model_validate(result)
+                return LLMWordPayload.model_validate(result)
 
-            @retry(
-                stop=stop_after_attempt(self.max_retries),
-                wait=wait_exponential(multiplier=1, min=2, max=10),
-                reraise=True,
-            )
-            def get_meaning() -> WordMeaning:
-                result = self._generate_structured_output(
-                    self._build_meaning_prompt(safe_word, profile), WordMeaning
-                )
-                return WordMeaning.model_validate(result)
+            payload_obj = get_payload()
+            result = self._payload_to_result(safe_word, payload_obj)
+            cache_record = self._cache_record_from_result(cache_key_word, result)
 
-            sentences_obj = get_sentences()
-            meaning_obj = get_meaning()
-            mapped_meanings = self._map_meanings(profile, meaning_obj)
-
-            result = {
-                "word": safe_word,
-                **sentences_obj.model_dump(),
-                **mapped_meanings,
-            }
-            cache_record = {**result, "word": cache_key_word}
-
-            self.db_client.insert_record(
+            db_client.insert_record(
                 record=cache_record,
-                columns=list(cache_record.keys())[1:],
+                columns=self._cache_columns,
                 table_name=self.table_name,
                 field_name=self.field_name,
             )
@@ -500,30 +619,7 @@ class LLMTransformation(Transformation):
             return df
 
         df_results = pd.DataFrame(valid_results)
-        if "meaning_spanish" in df_results.columns:
-            has_secondary_values = (
-                df_results["meaning_spanish"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .ne("")
-                .any()
-            )
-            if not has_secondary_values:
-                df_results = df_results.drop(columns=["meaning_spanish"])
-                logger.info(
-                    "LLMTransformation: Omitting 'meaning_spanish' column because no "
-                    "secondary-language values were generated."
-                )
-
-        llm_columns = [
-            "sentence_1",
-            "sentence_2",
-            "sentence_3",
-            "meaning_english",
-            "meaning_spanish",
-        ]
-        generated_cols = [col for col in llm_columns if col in df_results.columns]
+        generated_cols = [col for col in df_results.columns if col != "word"]
         if not generated_cols:
             logger.warning("LLMTransformation: No LLM columns in results.")
             return df

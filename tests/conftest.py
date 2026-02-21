@@ -33,6 +33,8 @@ def mock_settings():
         settings.llm_image_do_not_generate_terms = ["与", "一个", "不会"]
         settings.llm_image_model = "gemini-3-pro-image-preview"
         settings.llm_image_max_workers = 1
+        settings.llm_profile_id = "lotm_zh_en_es"
+        settings.llm_profile_db_isolation = True
         settings.llm_source_language = "Chinese (Simplified)"
         settings.llm_target_language = "english"
         settings.llm_secondary_target_language = None

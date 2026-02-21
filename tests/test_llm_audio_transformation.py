@@ -160,6 +160,26 @@ class TestLLMAudioTransformation:
             # Check that audio was created for existing sentences
             assert mock_create_audio.call_count == 2  # Only sentence_1 and sentence_3
 
+    def test_apply_supports_dynamic_sentence_count(self, llm_audio_transform):
+        """Test that dynamic sentence_N columns are detected beyond 3."""
+        df_dynamic = pd.DataFrame(
+            {
+                "word": ["隐秘"],
+                "sentence_2": ["他听见了低语。"],
+                "sentence_4": ["组织发布了新命令。"],
+            }
+        )
+
+        with patch.object(llm_audio_transform.audio_creator, "_create_audio") as mock_create_audio:
+            mock_create_audio.return_value = "/fake/audio/path.mp3"
+
+            result_df = llm_audio_transform.apply(df_dynamic)
+
+            assert "sentence_2_audio" in result_df.columns
+            assert "sentence_4_audio" in result_df.columns
+            assert "sentence_1_audio" not in result_df.columns
+            assert mock_create_audio.call_count == 2
+
     def test_apply_resolves_audio_language_from_source(self, llm_audio_transform):
         """Test sentence audio uses source-language-specific gTTS code."""
         llm_audio_transform.source_language = "Spanish"

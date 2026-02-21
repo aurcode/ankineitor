@@ -1,14 +1,18 @@
 """Unit tests for Gemini-backed LLM transformation."""
 
+import json
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
 
+from ankineitor.pipeline.db_client import SQLAlchemyClient
+from ankineitor.pipeline.llm_profiles import get_llm_profile
 from ankineitor.pipeline.llm_transformation import (
-    ExampleSentences,
     LLMTransformation,
-    WordMeaning,
+    LLMWordPayload,
+    SentencePayload,
 )
 from ankineitor.security.exceptions import ValidationError
 
@@ -30,6 +34,7 @@ class TestLLMTransformationInit:
                     api_key="AQ.test_token_123",
                 )
                 assert transformation.api_key == "AQ.test_token_123"
+                assert transformation.profile.profile_id == "lotm_zh_en_es"
 
     def test_missing_credentials_raises_validation_error(self, mock_settings):
         mock_db_client = Mock()
@@ -61,6 +66,60 @@ class TestLLMTransformationInit:
                 transformation = LLMTransformation(db_client=mock_db_client)
                 assert transformation.model_name == "gemini-3-flash-preview"
 
+    def test_profile_db_path_derived_from_profile_id(self, mock_settings):
+        mock_db_client = Mock()
+        mock_settings.llm_cache_db_path = "data/ankineitor_llm_cache.db"
+
+        with patch(
+            "ankineitor.pipeline.llm_transformation.get_settings",
+            return_value=mock_settings,
+        ):
+            with patch.object(
+                LLMTransformation, "_build_genai_client", return_value=Mock()
+            ):
+                transformation = LLMTransformation(db_client=mock_db_client)
+                db_path = transformation._build_profile_db_path(
+                    "LOTM: Chinese to English/Spanish"
+                )
+                assert db_path.endswith(
+                    "ankineitor_llm_cache__lotm_chinese_to_english_spanish.db"
+                )
+
+    def test_profile_db_isolation_falls_back_to_mock_client(self, mock_settings):
+        mock_db_client = Mock()
+
+        with patch(
+            "ankineitor.pipeline.llm_transformation.get_settings",
+            return_value=mock_settings,
+        ):
+            with patch.object(
+                LLMTransformation, "_build_genai_client", return_value=Mock()
+            ):
+                transformation = LLMTransformation(db_client=mock_db_client)
+                transformation.profile = get_llm_profile("lotm_zh_en_es")
+                assert transformation._get_active_profile_db_client() is mock_db_client
+
+    def test_profile_db_isolation_uses_profile_specific_sqlite(self, mock_settings, temp_dir):
+        base_db = temp_dir / "ankineitor_llm_cache.db"
+        mock_settings.llm_cache_db_path = str(base_db)
+        base_client = SQLAlchemyClient(db_path=str(base_db))
+
+        with patch(
+            "ankineitor.pipeline.llm_transformation.get_settings",
+            return_value=mock_settings,
+        ):
+            with patch.object(
+                LLMTransformation, "_build_genai_client", return_value=Mock()
+            ):
+                transformation = LLMTransformation(db_client=base_client)
+                transformation.profile = get_llm_profile("lotm_zh_en_es")
+                profiled_client = transformation._get_active_profile_db_client()
+
+                assert profiled_client is not base_client
+                assert Path(profiled_client.engine.url.database).name == (
+                    "ankineitor_llm_cache__lotm_zh_en_es.db"
+                )
+
 
 class TestLLMTransformationProcess:
     def test_column_name_property(self, mock_settings):
@@ -76,7 +135,7 @@ class TestLLMTransformationProcess:
                 transformation = LLMTransformation(db_client=mock_db_client)
                 assert transformation.column_name == "meaning_english"
 
-    def test_language_profile_for_chinese_is_fixed_to_en_es(self, mock_settings):
+    def test_build_profile_prompt_includes_word(self, mock_settings):
         mock_db_client = Mock()
 
         with patch(
@@ -87,48 +146,9 @@ class TestLLMTransformationProcess:
                 LLMTransformation, "_build_genai_client", return_value=Mock()
             ):
                 transformation = LLMTransformation(db_client=mock_db_client)
-                profile = transformation._resolve_language_profile("谢谢")
-                assert profile["is_chinese"] is True
-                assert profile["primary_target_language"] == "English"
-                assert profile["secondary_target_language"] == "Spanish"
-
-    def test_language_profile_for_non_chinese_uses_config(self, mock_settings):
-        mock_db_client = Mock()
-        mock_settings.llm_source_language = "Spanish"
-        mock_settings.llm_target_language = "English"
-        mock_settings.llm_secondary_target_language = None
-
-        with patch(
-            "ankineitor.pipeline.llm_transformation.get_settings",
-            return_value=mock_settings,
-        ):
-            with patch.object(
-                LLMTransformation, "_build_genai_client", return_value=Mock()
-            ):
-                transformation = LLMTransformation(db_client=mock_db_client)
-                profile = transformation._resolve_language_profile("gracias")
-                assert profile["is_chinese"] is False
-                assert profile["source_language"] == "Spanish"
-                assert profile["primary_target_language"] == "English"
-                assert profile["secondary_target_language"] is None
-
-    def test_non_chinese_prompt_mentions_configured_languages(self, mock_settings):
-        mock_db_client = Mock()
-        mock_settings.llm_source_language = "Spanish"
-        mock_settings.llm_target_language = "English"
-        mock_settings.llm_secondary_target_language = "French"
-
-        with patch(
-            "ankineitor.pipeline.llm_transformation.get_settings",
-            return_value=mock_settings,
-        ):
-            with patch.object(
-                LLMTransformation, "_build_genai_client", return_value=Mock()
-            ):
-                transformation = LLMTransformation(db_client=mock_db_client)
-                profile = transformation._resolve_language_profile("hola")
-                prompt = transformation._build_meaning_prompt("hola", profile)
-                assert "in English and French" in prompt
+                prompt = transformation._build_profile_prompt("隐秘")
+                assert "Analyze the target word '隐秘'" in prompt
+                assert "Lord of the Mysteries" in prompt
 
     def test_process_word_empty_returns_none(self, mock_settings):
         mock_db_client = Mock()
@@ -144,15 +164,36 @@ class TestLLMTransformationProcess:
                 assert transformation.process_word("") is None
                 assert transformation.process_word("   ") is None
 
-    def test_cache_hit_avoids_generation(self, mock_settings):
+    def test_cache_hit_avoids_generation_with_payload_json(self, mock_settings):
         mock_db_client = Mock()
+        cached_payload = {
+            "word": "隐秘",
+            "pinyin": "yǐn mì",
+            "part_of_speech": "Adjective",
+            "character_breakdown": "隐 = hidden, 秘 = secret",
+            "detailed_explanation_english": "hidden, secret, covert",
+            "detailed_explanation_spanish": "oculto, secreto",
+            "synonyms": ["秘密"],
+            "antonyms": ["公开"],
+            "collocations": ["隐秘组织"],
+            "edge_case_notes": "",
+            "sentences": [
+                {
+                    "target_language_highlighted": "他加入了<b>隐秘</b>组织。",
+                    "target_language_cloze": "他加入了___组织。",
+                    "sentence_pinyin": "tā jiā rù le yǐn mì zǔ zhī",
+                    "translation_english": "He joined a secret organization.",
+                    "translation_spanish": "Se unió a una organización secreta.",
+                }
+            ],
+        }
         mock_db_client.find_record.return_value = {
-            "word": "你好",
-            "sentence_1": "你好，世界。",
-            "sentence_2": "你好，朋友。",
-            "sentence_3": "你好，今天。",
-            "meaning_english": "hello",
-            "meaning_spanish": "hola",
+            "word": "cache-key::隐秘",
+            "improved_meaning": json.dumps(cached_payload, ensure_ascii=False),
+            "example_sentences": json.dumps(cached_payload["sentences"], ensure_ascii=False),
+            "sentence_1": "他加入了<b>隐秘</b>组织。",
+            "meaning_english": "hidden",
+            "meaning_spanish": "oculto",
         }
 
         with patch(
@@ -164,49 +205,13 @@ class TestLLMTransformationProcess:
             ):
                 transformation = LLMTransformation(db_client=mock_db_client)
                 with patch.object(transformation, "_generate_structured_output") as mock_generate:
-                    result = transformation.process_word("你好")
+                    result = transformation.process_word("隐秘")
                     assert result is not None
-                    assert result["meaning_english"] == "hello"
+                    assert result["meaning_english"] == "hidden, secret, covert"
+                    assert result["sentence_1"] == "他加入了<b>隐秘</b>组织。"
                     mock_generate.assert_not_called()
 
-    def test_non_chinese_meaning_mapping_defaults_to_primary(self, mock_settings):
-        mock_db_client = Mock()
-        mock_db_client.find_record.return_value = None
-        mock_settings.llm_source_language = "Spanish"
-        mock_settings.llm_target_language = "French"
-        mock_settings.llm_secondary_target_language = None
-
-        with patch(
-            "ankineitor.pipeline.llm_transformation.get_settings",
-            return_value=mock_settings,
-        ):
-            with patch.object(
-                LLMTransformation, "_build_genai_client", return_value=Mock()
-            ):
-                transformation = LLMTransformation(db_client=mock_db_client)
-
-                def mock_generate(prompt, response_model):
-                    if response_model is ExampleSentences:
-                        return ExampleSentences(
-                            sentence_1="Hola, mundo.",
-                            sentence_2="Gracias por venir.",
-                            sentence_3="Esto es una prueba.",
-                        )
-                    if response_model is WordMeaning:
-                        return WordMeaning(english="merci", spanish="")
-                    raise ValueError("unexpected response model")
-
-                with patch.object(
-                    transformation,
-                    "_generate_structured_output",
-                    side_effect=mock_generate,
-                ):
-                    result = transformation.process_word("gracias")
-                    assert result is not None
-                    assert result["meaning_english"] == "merci"
-                    assert result["meaning_spanish"] is None
-
-    def test_cache_miss_generates_and_saves(self, mock_settings):
+    def test_cache_miss_generates_dynamic_sentences_and_saves(self, mock_settings):
         mock_db_client = Mock()
         mock_db_client.find_record.return_value = None
 
@@ -219,27 +224,62 @@ class TestLLMTransformationProcess:
             ):
                 transformation = LLMTransformation(db_client=mock_db_client)
 
-                def mock_generate(prompt, response_model):
-                    if response_model is ExampleSentences:
-                        return ExampleSentences(
-                            sentence_1="你好，世界。",
-                            sentence_2="你好，朋友。",
-                            sentence_3="你好，今天。",
-                        )
-                    if response_model is WordMeaning:
-                        return WordMeaning(english="hello", spanish="hola")
-                    raise ValueError("unexpected response model")
+                payload = LLMWordPayload(
+                    word="隐秘",
+                    pinyin="yǐn mì",
+                    part_of_speech="Adjective",
+                    character_breakdown="隐 = hidden, 秘 = secret",
+                    detailed_explanation_english="hidden, secret, covert",
+                    detailed_explanation_spanish="oculto, secreto, encubierto",
+                    synonyms=["秘密", "隐蔽"],
+                    antonyms=["公开"],
+                    collocations=["隐秘组织", "隐秘行动"],
+                    edge_case_notes="Often carries a mysterious tone in fiction.",
+                    sentences=[
+                        SentencePayload(
+                            target_language_highlighted="在血月下，他听见<b>隐秘</b>仪式的低语。",
+                            target_language_cloze="在血月下，他听见___仪式的低语。",
+                            sentence_pinyin="zài xuè yuè xià, tā tīng jiàn yǐn mì yí shì de dī yǔ",
+                            translation_english="Under the crimson moon, he heard whispers of a secret ritual.",
+                            translation_spanish="Bajo la luna carmesí, oyó susurros de un ritual secreto.",
+                        ),
+                        SentencePayload(
+                            target_language_highlighted="侦探发现了教会档案里的<b>隐秘</b>线索。",
+                            target_language_cloze="侦探发现了教会档案里的___线索。",
+                            sentence_pinyin="zhēn tàn fā xiàn le jiào huì dàng àn lǐ de yǐn mì xiàn suǒ",
+                            translation_english="The detective found hidden clues in the church archives.",
+                            translation_spanish="El detective encontró pistas ocultas en los archivos de la iglesia.",
+                        ),
+                        SentencePayload(
+                            target_language_highlighted="那瓶魔药揭开了他心中的<b>隐秘</b>恐惧。",
+                            target_language_cloze="那瓶魔药揭开了他心中的___恐惧。",
+                            sentence_pinyin="nà píng mó yào jiē kāi le tā xīn zhōng de yǐn mì kǒng jù",
+                            translation_english="That potion uncovered his hidden fear.",
+                            translation_spanish="Esa poción reveló su miedo oculto.",
+                        ),
+                        SentencePayload(
+                            target_language_highlighted="组织用暗号传递<b>隐秘</b>命令。",
+                            target_language_cloze="组织用暗号传递___命令。",
+                            sentence_pinyin="zǔ zhī yòng àn hào chuán dì yǐn mì mìng lìng",
+                            translation_english="The organization used code words to pass covert orders.",
+                            translation_spanish="La organización usó claves para transmitir órdenes encubiertas.",
+                        ),
+                    ],
+                )
 
                 with patch.object(
                     transformation,
                     "_generate_structured_output",
-                    side_effect=mock_generate,
+                    return_value=payload,
                 ):
-                    result = transformation.process_word("你好")
+                    result = transformation.process_word("隐秘")
                     assert result is not None
-                    assert result["word"] == "你好"
-                    assert result["meaning_english"] == "hello"
-                    assert result["meaning_spanish"] == "hola"
+                    assert result["word"] == "隐秘"
+                    assert result["meaning_english"] == "hidden, secret, covert"
+                    assert result["sentence_1"] is not None
+                    assert result["sentence_4"] is not None
+                    assert result["sentence_4_translation_english"] is not None
+                    assert result["sentences_json"]
                     mock_db_client.insert_record.assert_called_once()
 
     def test_process_word_handles_generation_error(self, mock_settings):
@@ -259,7 +299,7 @@ class TestLLMTransformationProcess:
                     "_generate_structured_output",
                     side_effect=RuntimeError("boom"),
                 ):
-                    assert transformation.process_word("你好") is None
+                    assert transformation.process_word("隐秘") is None
 
 
 class TestLLMTransformationApply:
@@ -311,10 +351,9 @@ class TestLLMTransformationApply:
                         return {
                             "word": "你好",
                             "sentence_1": "你好，世界。",
-                            "sentence_2": "你好，朋友。",
-                            "sentence_3": "你好，今天。",
+                            "sentence_1_cloze": "___，世界。",
                             "meaning_english": "hello",
-                            "meaning_spanish": "hola",
+                            "sentences_json": "[]",
                         }
                     return None
 
@@ -323,36 +362,8 @@ class TestLLMTransformationApply:
                 result = transformation.apply(df)
                 assert len(result) == 2
                 assert "meaning_english" in result.columns
+                assert "sentence_1_cloze" in result.columns
                 assert (
                     result.loc[result["word"] == "你好", "meaning_english"].iloc[0]
                     == "hello"
                 )
-
-    def test_apply_omits_secondary_column_when_all_values_empty(self, mock_settings):
-        mock_db_client = Mock()
-
-        with patch(
-            "ankineitor.pipeline.llm_transformation.get_settings",
-            return_value=mock_settings,
-        ):
-            with patch.object(
-                LLMTransformation, "_build_genai_client", return_value=Mock()
-            ):
-                transformation = LLMTransformation(db_client=mock_db_client)
-
-                transformation.process_word = Mock(
-                    side_effect=lambda word: {
-                        "word": word,
-                        "sentence_1": f"{word} s1",
-                        "sentence_2": f"{word} s2",
-                        "sentence_3": f"{word} s3",
-                        "meaning_english": f"{word} meaning",
-                        "meaning_spanish": None,
-                    }
-                )
-
-                df = pd.DataFrame({"word": ["hola", "adios"]})
-                result = transformation.apply(df)
-
-                assert "meaning_english" in result.columns
-                assert "meaning_spanish" not in result.columns
