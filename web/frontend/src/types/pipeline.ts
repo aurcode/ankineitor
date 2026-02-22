@@ -1,4 +1,6 @@
 export type RunStatus = "queued" | "running" | "retrying" | "success" | "error";
+export type BackgroundJobStatus = "queued" | "running" | "success" | "error";
+export type BackgroundJobType = "anki_deck" | "word_extractor";
 
 export type NodeExecutionStatus = "idle" | "queued" | "running" | "success" | "error";
 
@@ -18,6 +20,14 @@ export interface ProfileOptions {
 export interface PipelineOptionsResponse {
   profiles: ProfileOptions[];
   default_profile_id: string;
+}
+
+export interface AuthTokenResponse {
+  token: string;
+  user: {
+    id: number;
+    username: string;
+  };
 }
 
 export interface CreateRunRequest {
@@ -109,6 +119,48 @@ export interface PipelineWebsocketMessage {
   event: PipelineEventEnvelope;
 }
 
+export interface BackgroundJobSummary {
+  id: string;
+  job_type: BackgroundJobType;
+  status: BackgroundJobStatus;
+  result_payload: Record<string, unknown>;
+  error_message: string;
+  created_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface BackgroundJobEventPayload {
+  event: string;
+  [key: string]: unknown;
+}
+
+export interface BackgroundJobEventEnvelope {
+  id: number;
+  job_id: string;
+  sequence: number;
+  created_at: string;
+  payload: BackgroundJobEventPayload;
+}
+
+export interface BackgroundJobCreateResponse {
+  job: BackgroundJobSummary;
+  events: BackgroundJobEventEnvelope[];
+}
+
+export interface BackgroundJobDetailResponse {
+  job: BackgroundJobSummary;
+}
+
+export interface BackgroundJobEventsResponse {
+  job_id: string;
+  events: BackgroundJobEventEnvelope[];
+}
+
+export type JobWebsocketMessage =
+  | { type: "job_snapshot"; job: BackgroundJobSummary }
+  | { type: "job_event"; event: BackgroundJobEventEnvelope };
+
 export interface AnkiField {
   name: string;
 }
@@ -139,13 +191,14 @@ export interface AnkiPresetsResponse {
   chinese_pipeline: AnkiConfigPayload;
 }
 
-export interface GenerateAnkiDeckResponse {
+export interface AnkiJobResultPayload {
   artifact_id: string;
   deck_name: string;
   source_csv_name: string;
   file_size_bytes: number;
-  download_url: string;
+  output_path: string;
   created_at: string;
+  download_url?: string;
 }
 
 export interface FlashcardSavedFile {

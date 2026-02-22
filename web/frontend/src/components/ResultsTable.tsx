@@ -13,7 +13,9 @@ interface ResultsTableProps {
   onSearchSubmit: () => void;
   onPageChange: (page: number) => void;
   onAddCategory: (category: string) => void;
+  onDownloadCsv: () => void;
   categoryUpdating: boolean;
+  csvDownloading: boolean;
 }
 
 export function ResultsTable(props: ResultsTableProps) {
@@ -42,9 +44,14 @@ export function ResultsTable(props: ResultsTableProps) {
         <h3>Results</h3>
         <div className="results-actions">
           {props.results?.csv_url ? (
-            <a className="secondary" href={props.results.csv_url} target="_blank" rel="noreferrer">
-              Download CSV
-            </a>
+            <button
+              type="button"
+              className="secondary"
+              onClick={props.onDownloadCsv}
+              disabled={props.csvDownloading}
+            >
+              {props.csvDownloading ? "Preparing..." : "Download CSV"}
+            </button>
           ) : null}
         </div>
       </div>

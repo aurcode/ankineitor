@@ -15,10 +15,17 @@ function createMockResponse(body: unknown): Response {
 
 describe("App tab navigation", () => {
   beforeEach(() => {
+    localStorage.clear();
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.includes("/api/auth/token")) {
+          return createMockResponse({
+            token: "test-token",
+            user: { id: 1, username: "demo" },
+          });
+        }
         if (url.includes("/api/pipeline/options")) {
           return createMockResponse({
             profiles: [
@@ -72,11 +79,16 @@ describe("App tab navigation", () => {
     );
   });
 
-  it("switches between migrated workspace tabs", async () => {
+  it("signs in and switches between migrated workspace tabs", async () => {
     render(<App />);
 
+    expect(screen.getByRole("heading", { name: "Sign In" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "demo" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "demo-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign In" }));
+
     expect(
-      screen.getByRole("heading", { name: "Ankineitor Pipeline Workspace" }),
+      await screen.findByRole("heading", { name: "Ankineitor Pipeline Workspace" }),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Anki Deck Generator" }));

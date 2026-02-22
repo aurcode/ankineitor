@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addCategoryToRun,
   createPipelineRun,
+  downloadAuthenticatedFile,
   getPipelineOptions,
   getPipelineRun,
   getPipelineRunResults,
@@ -64,6 +65,7 @@ export function PipelinePage() {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [categoryUpdating, setCategoryUpdating] = useState(false);
+  const [csvDownloading, setCsvDownloading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
   const wsCleanupRef = useRef<(() => void) | null>(null);
@@ -277,6 +279,26 @@ export function PipelinePage() {
     }
   };
 
+  const handleDownloadCsv = async () => {
+    const csvUrl = results?.csv_url;
+    if (!csvUrl || !run) {
+      return;
+    }
+
+    setCsvDownloading(true);
+    setErrorMessage("");
+    try {
+      await downloadAuthenticatedFile({
+        url: csvUrl,
+        fallbackFileName: run.csv_download_name || `pipeline_run_${run.id}.csv`,
+      });
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setCsvDownloading(false);
+    }
+  };
+
   return (
     <div className="workspace-page">
       <header className="page-header">
@@ -334,7 +356,9 @@ export function PipelinePage() {
         onSearchSubmit={handleSearchSubmit}
         onPageChange={handlePageChange}
         onAddCategory={handleAddCategory}
+        onDownloadCsv={handleDownloadCsv}
         categoryUpdating={categoryUpdating}
+        csvDownloading={csvDownloading}
       />
 
       <footer className="page-footer">

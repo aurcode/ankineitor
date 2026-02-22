@@ -3,69 +3,177 @@ import {
   AddCategoryResponse,
   AnkiConfigPayload,
   AnkiPresetsResponse,
+  AuthTokenResponse,
+  BackgroundJobCreateResponse,
+  BackgroundJobDetailResponse,
+  BackgroundJobEventsResponse,
   CreateRunRequest,
   FlashcardCardResponse,
   FlashcardDatasetSummary,
   FlashcardSavedFilesResponse,
   FlashcardSavedProfilesResponse,
-  GenerateAnkiDeckResponse,
   PipelineOptionsResponse,
   RunResultsResponse,
   RunSummary,
-  WordExtractorResponse,
 } from "../types/pipeline";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const AUTH_TOKEN_STORAGE_KEY = "ankineitor_web_auth_token";
+const AUTH_USERNAME_STORAGE_KEY = "ankineitor_web_auth_username";
+
+function resolveApiUrl(pathOrUrl: string): string {
+  if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
+    return pathOrUrl;
+  }
+  return `${API_BASE}${pathOrUrl}`;
+}
+
+function getErrorMessage(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== "object") {
+    return fallback;
+  }
+  const record = payload as Record<string, unknown>;
+  const detail = record.detail;
+  const error = record.error;
+  if (typeof detail === "string" && detail.trim()) {
+    return detail;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  return fallback;
+}
+
+async function readErrorMessage(response: Response): Promise<string> {
+  const fallback = `Request failed (${response.status})`;
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = await response.json();
+      return getErrorMessage(payload, fallback);
+    } catch {
+      return fallback;
+    }
+  }
+
+  const text = await response.text();
+  if (text && text.trim()) {
+    return text;
+  }
+  return fallback;
+}
+
+function getAuthHeaders(baseHeaders?: HeadersInit): Headers {
+  const headers = new Headers(baseHeaders || {});
+  const token = getAuthToken();
+  if (token) {
+    headers.set("Authorization", `Token ${token}`);
+  }
+  return headers;
+}
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
+  const headers = getAuthHeaders(init?.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const response = await fetch(resolveApiUrl(path), {
     ...init,
+    headers,
   });
 
   if (!response.ok) {
-    const contentType = response.headers.get("content-type") || "";
-    let message = `Request failed (${response.status})`;
-    if (contentType.includes("application/json")) {
-      const payload = await response.json();
-      message = String(payload.detail || payload.error || message);
-    } else {
-      const text = await response.text();
-      if (text) {
-        message = text;
-      }
-    }
-    throw new Error(message);
+    throw new Error(await readErrorMessage(response));
   }
 
   return (await response.json()) as T;
 }
 
 async function requestFormJson<T>(path: string, formData: FormData): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const headers = getAuthHeaders();
+  const response = await fetch(resolveApiUrl(path), {
     method: "POST",
+    headers,
     body: formData,
   });
 
   if (!response.ok) {
-    const contentType = response.headers.get("content-type") || "";
-    let message = `Request failed (${response.status})`;
-    if (contentType.includes("application/json")) {
-      const payload = await response.json();
-      message = String(payload.detail || payload.error || message);
-    } else {
-      const text = await response.text();
-      if (text) {
-        message = text;
-      }
-    }
-    throw new Error(message);
+    throw new Error(await readErrorMessage(response));
   }
 
   return (await response.json()) as T;
+}
+
+function parseFilenameFromDisposition(contentDisposition: string | null, fallback: string): string {
+  if (!contentDisposition) {
+    return fallback;
+  }
+  const match = contentDisposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+  if (!match?.[1]) {
+    return fallback;
+  }
+  try {
+    return decodeURIComponent(match[1].trim());
+  } catch {
+    return match[1].trim();
+  }
+}
+
+export function getApiBaseUrl(): string {
+  return API_BASE;
+}
+
+export function getAuthToken(): string | null {
+  return localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+}
+
+export function getAuthUsername(): string | null {
+  return localStorage.getItem(AUTH_USERNAME_STORAGE_KEY);
+}
+
+export function saveAuthSession(payload: AuthTokenResponse): void {
+  localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, payload.token);
+  localStorage.setItem(AUTH_USERNAME_STORAGE_KEY, payload.user.username);
+}
+
+export function clearAuthSession(): void {
+  localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  localStorage.removeItem(AUTH_USERNAME_STORAGE_KEY);
+}
+
+export function createAuthToken(params: { username: string; password: string }): Promise<AuthTokenResponse> {
+  return requestJson<AuthTokenResponse>("/api/auth/token", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function downloadAuthenticatedFile(params: {
+  url: string;
+  fallbackFileName: string;
+}): Promise<void> {
+  const response = await fetch(resolveApiUrl(params.url), {
+    method: "GET",
+    headers: getAuthHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = parseFilenameFromDisposition(
+    response.headers.get("content-disposition"),
+    params.fallbackFileName,
+  );
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
 }
 
 export function getPipelineOptions(): Promise<PipelineOptionsResponse> {
@@ -121,12 +229,20 @@ export function generateAnkiDeck(params: {
   csvFile: File;
   deckName: string;
   config: AnkiConfigPayload;
-}): Promise<GenerateAnkiDeckResponse> {
+}): Promise<BackgroundJobCreateResponse> {
   const formData = new FormData();
   formData.append("csv_file", params.csvFile);
   formData.append("deck_name", params.deckName);
   formData.append("config", JSON.stringify(params.config));
-  return requestFormJson<GenerateAnkiDeckResponse>("/api/anki/decks/generate", formData);
+  return requestFormJson<BackgroundJobCreateResponse>("/api/anki/decks/generate", formData);
+}
+
+export function getBackgroundJob(jobId: string): Promise<BackgroundJobDetailResponse> {
+  return requestJson<BackgroundJobDetailResponse>(`/api/jobs/${jobId}`);
+}
+
+export function getBackgroundJobEvents(jobId: string): Promise<BackgroundJobEventsResponse> {
+  return requestJson<BackgroundJobEventsResponse>(`/api/jobs/${jobId}/events`);
 }
 
 export function getFlashcardSavedProfiles(): Promise<FlashcardSavedProfilesResponse> {
@@ -180,7 +296,7 @@ export function analyzeWordExtractor(params: {
   textInput: string;
   selectedHskLevels: string[];
   minFrequency: number;
-}): Promise<WordExtractorResponse> {
+}): Promise<BackgroundJobCreateResponse> {
   const formData = new FormData();
   for (const file of params.files) {
     formData.append("files", file);
@@ -191,5 +307,5 @@ export function analyzeWordExtractor(params: {
   }
   formData.append("min_frequency", String(params.minFrequency));
 
-  return requestFormJson<WordExtractorResponse>("/api/word-extractor/analyze", formData);
+  return requestFormJson<BackgroundJobCreateResponse>("/api/word-extractor/analyze", formData);
 }

@@ -1,10 +1,64 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { generateAnkiDeck, getAnkiPresets } from "../api/pipeline";
-import { AnkiConfigPayload, AnkiPresetsResponse, GenerateAnkiDeckResponse } from "../types/pipeline";
+import {
+  downloadAuthenticatedFile,
+  generateAnkiDeck,
+  getAnkiPresets,
+  getBackgroundJob,
+} from "../api/pipeline";
+import {
+  AnkiConfigPayload,
+  AnkiJobResultPayload,
+  AnkiPresetsResponse,
+  BackgroundJobEventEnvelope,
+  BackgroundJobSummary,
+} from "../types/pipeline";
+import { subscribeToBackgroundJob } from "../ws/pipeline";
 
 function prettyJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
+}
+
+function upsertEvent(
+  previous: BackgroundJobEventEnvelope[],
+  incoming: BackgroundJobEventEnvelope,
+): BackgroundJobEventEnvelope[] {
+  const existing = previous.find((item) => item.sequence === incoming.sequence);
+  if (existing) {
+    return previous.map((item) => (item.sequence === incoming.sequence ? incoming : item));
+  }
+  return [...previous, incoming].sort((a, b) => a.sequence - b.sequence);
+}
+
+function parseAnkiResult(payload: Record<string, unknown>): AnkiJobResultPayload | null {
+  const artifactId = payload.artifact_id;
+  const deckName = payload.deck_name;
+  const sourceCsvName = payload.source_csv_name;
+  const fileSizeBytes = payload.file_size_bytes;
+  const outputPath = payload.output_path;
+  const createdAt = payload.created_at;
+
+  if (
+    typeof artifactId !== "string" ||
+    typeof deckName !== "string" ||
+    typeof sourceCsvName !== "string" ||
+    typeof fileSizeBytes !== "number" ||
+    typeof outputPath !== "string" ||
+    typeof createdAt !== "string"
+  ) {
+    return null;
+  }
+
+  const downloadUrl = typeof payload.download_url === "string" ? payload.download_url : undefined;
+  return {
+    artifact_id: artifactId,
+    deck_name: deckName,
+    source_csv_name: sourceCsvName,
+    file_size_bytes: fileSizeBytes,
+    output_path: outputPath,
+    created_at: createdAt,
+    download_url: downloadUrl,
+  };
 }
 
 export function AnkiDeckPage() {
@@ -13,9 +67,16 @@ export function AnkiDeckPage() {
   const [configJson, setConfigJson] = useState("");
   const [deckName, setDeckName] = useState("My Anki Deck");
   const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [result, setResult] = useState<GenerateAnkiDeckResponse | null>(null);
+  const [job, setJob] = useState<BackgroundJobSummary | null>(null);
+  const [events, setEvents] = useState<BackgroundJobEventEnvelope[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+
+  const wsCleanupRef = useRef<(() => void) | null>(null);
+
+  const isTerminal = job?.status === "success" || job?.status === "error";
+  const ankiResult = useMemo(() => parseAnkiResult(job?.result_payload || {}), [job?.result_payload]);
 
   useEffect(() => {
     let active = true;
@@ -40,6 +101,50 @@ export function AnkiDeckPage() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!job) {
+      return;
+    }
+
+    wsCleanupRef.current?.();
+    wsCleanupRef.current = subscribeToBackgroundJob(job.id, {
+      onSnapshot: (snapshot) => {
+        setJob(snapshot);
+      },
+      onEvent: (event) => {
+        setEvents((previous) => upsertEvent(previous, event));
+      },
+      onError: (error) => {
+        setErrorMessage(error);
+      },
+    });
+
+    return () => {
+      wsCleanupRef.current?.();
+      wsCleanupRef.current = null;
+    };
+  }, [job?.id]);
+
+  useEffect(() => {
+    if (!job || isTerminal) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void getBackgroundJob(job.id)
+        .then((payload) => {
+          setJob(payload.job);
+        })
+        .catch((error) => {
+          setErrorMessage(String(error));
+        });
+    }, 2000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [job?.id, isTerminal]);
 
   const handlePresetChange = (value: "default" | "chinese_pipeline") => {
     setPresetKey(value);
@@ -66,7 +171,8 @@ export function AnkiDeckPage() {
 
     setIsSubmitting(true);
     setErrorMessage("");
-    setResult(null);
+    setJob(null);
+    setEvents([]);
 
     try {
       const payload = await generateAnkiDeck({
@@ -74,7 +180,8 @@ export function AnkiDeckPage() {
         deckName,
         config: parsedConfig,
       });
-      setResult(payload);
+      setJob(payload.job);
+      setEvents(payload.events || []);
     } catch (error) {
       setErrorMessage(String(error));
     } finally {
@@ -82,11 +189,29 @@ export function AnkiDeckPage() {
     }
   };
 
+  const handleDownload = async () => {
+    if (!ankiResult?.download_url) {
+      return;
+    }
+    setIsDownloading(true);
+    setErrorMessage("");
+    try {
+      await downloadAuthenticatedFile({
+        url: ankiResult.download_url,
+        fallbackFileName: `${ankiResult.deck_name}.apkg`,
+      });
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   return (
     <div className="workspace-page single-column">
       <header className="page-header">
         <h1>Anki Deck Generator</h1>
-        <p>Generate `.apkg` decks from CSV using the existing Python deck generator and templates.</p>
+        <p>Generate `.apkg` decks in a background worker and stream progress events live.</p>
       </header>
 
       <section className="panel-block">
@@ -134,21 +259,52 @@ export function AnkiDeckPage() {
         {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
 
         <button type="button" className="primary" disabled={isSubmitting} onClick={handleGenerate}>
-          {isSubmitting ? "Generating..." : "Generate Deck"}
+          {isSubmitting ? "Queuing..." : "Generate Deck"}
         </button>
-
-        {result ? (
-          <div className="result-box">
-            <p>
-              Deck generated: <strong>{result.deck_name}</strong>
-            </p>
-            <p className="muted">Source: {result.source_csv_name}</p>
-            <a className="secondary" href={result.download_url} target="_blank" rel="noreferrer">
-              Download .apkg
-            </a>
-          </div>
-        ) : null}
       </section>
+
+      {job ? (
+        <section className="panel-block">
+          <h2>Job Status</h2>
+          <p>
+            Job <strong>{job.id}</strong>
+          </p>
+          <p className="muted">Status: {job.status}</p>
+          {job.error_message ? <p className="error-message">{job.error_message}</p> : null}
+
+          {job.status === "success" && ankiResult ? (
+            <div className="result-box">
+              <p>
+                Deck generated: <strong>{ankiResult.deck_name}</strong>
+              </p>
+              <p className="muted">Source: {ankiResult.source_csv_name}</p>
+              {ankiResult.download_url ? (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleDownload}
+                  disabled={isDownloading}
+                >
+                  {isDownloading ? "Preparing..." : "Download .apkg"}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
+          <h3>Events</h3>
+          {events.length === 0 ? (
+            <p className="muted">No events yet.</p>
+          ) : (
+            <ul className="plain-list">
+              {events.slice(-20).map((event) => (
+                <li key={`${event.job_id}:${event.sequence}`}>
+                  [{event.sequence}] {String(event.payload.event || event.payload.event_type || "event")}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }

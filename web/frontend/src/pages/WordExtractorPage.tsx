@@ -1,7 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { analyzeWordExtractor } from "../api/pipeline";
-import { WordExtractorResponse } from "../types/pipeline";
+import { analyzeWordExtractor, getBackgroundJob } from "../api/pipeline";
+import {
+  BackgroundJobEventEnvelope,
+  BackgroundJobSummary,
+  WordExtractorResponse,
+} from "../types/pipeline";
+import { subscribeToBackgroundJob } from "../ws/pipeline";
 
 const HSK_LEVELS = ["hsk1", "hsk2", "hsk3", "hsk4", "hsk5"];
 
@@ -45,14 +50,106 @@ function DataPreviewTable(props: {
   );
 }
 
+function upsertEvent(
+  previous: BackgroundJobEventEnvelope[],
+  incoming: BackgroundJobEventEnvelope,
+): BackgroundJobEventEnvelope[] {
+  const existing = previous.find((item) => item.sequence === incoming.sequence);
+  if (existing) {
+    return previous.map((item) => (item.sequence === incoming.sequence ? incoming : item));
+  }
+  return [...previous, incoming].sort((a, b) => a.sequence - b.sequence);
+}
+
+function parseWordExtractorResult(payload: Record<string, unknown>): WordExtractorResponse | null {
+  const summary = payload.summary;
+  if (!summary || typeof summary !== "object") {
+    return null;
+  }
+
+  const initialWords = Array.isArray(payload.initial_words) ? payload.initial_words : null;
+  const filteredWords = Array.isArray(payload.filtered_words) ? payload.filtered_words : null;
+  const removedWords = Array.isArray(payload.removed_words) ? payload.removed_words : null;
+  const finalWords = Array.isArray(payload.final_words) ? payload.final_words : null;
+  const copyableWordList = payload.copyable_word_list;
+  const extractionErrors = payload.extraction_errors;
+
+  if (
+    !initialWords ||
+    !filteredWords ||
+    !removedWords ||
+    !finalWords ||
+    typeof copyableWordList !== "string" ||
+    !extractionErrors ||
+    typeof extractionErrors !== "object"
+  ) {
+    return null;
+  }
+
+  return payload as unknown as WordExtractorResponse;
+}
+
 export function WordExtractorPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [textInput, setTextInput] = useState("");
   const [selectedHskLevels, setSelectedHskLevels] = useState<string[]>([]);
   const [minFrequency, setMinFrequency] = useState(2);
-  const [result, setResult] = useState<WordExtractorResponse | null>(null);
+  const [job, setJob] = useState<BackgroundJobSummary | null>(null);
+  const [events, setEvents] = useState<BackgroundJobEventEnvelope[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+
+  const wsCleanupRef = useRef<(() => void) | null>(null);
+
+  const isTerminal = job?.status === "success" || job?.status === "error";
+  const result = useMemo(
+    () => parseWordExtractorResult(job?.result_payload || {}),
+    [job?.result_payload],
+  );
+
+  useEffect(() => {
+    if (!job) {
+      return;
+    }
+
+    wsCleanupRef.current?.();
+    wsCleanupRef.current = subscribeToBackgroundJob(job.id, {
+      onSnapshot: (snapshot) => {
+        setJob(snapshot);
+      },
+      onEvent: (event) => {
+        setEvents((previous) => upsertEvent(previous, event));
+      },
+      onError: (error) => {
+        setErrorMessage(error);
+      },
+    });
+
+    return () => {
+      wsCleanupRef.current?.();
+      wsCleanupRef.current = null;
+    };
+  }, [job?.id]);
+
+  useEffect(() => {
+    if (!job || isTerminal) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void getBackgroundJob(job.id)
+        .then((payload) => {
+          setJob(payload.job);
+        })
+        .catch((error) => {
+          setErrorMessage(String(error));
+        });
+    }, 2000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [job?.id, isTerminal]);
 
   const toggleHsk = (level: string, checked: boolean) => {
     setSelectedHskLevels((previous) => {
@@ -69,6 +166,8 @@ export function WordExtractorPage() {
   const handleAnalyze = async () => {
     setIsLoading(true);
     setErrorMessage("");
+    setJob(null);
+    setEvents([]);
     try {
       const payload = await analyzeWordExtractor({
         files,
@@ -76,7 +175,8 @@ export function WordExtractorPage() {
         selectedHskLevels,
         minFrequency,
       });
-      setResult(payload);
+      setJob(payload.job);
+      setEvents(payload.events || []);
     } catch (error) {
       setErrorMessage(String(error));
     } finally {
@@ -88,7 +188,7 @@ export function WordExtractorPage() {
     <div className="workspace-page single-column">
       <header className="page-header">
         <h1>Word Extractor</h1>
-        <p>Extract Chinese words from documents or pasted text, then filter by HSK level and frequency.</p>
+        <p>Extract Chinese words in a background worker with live progress and filtering results.</p>
       </header>
 
       <section className="panel-block">
@@ -141,11 +241,35 @@ export function WordExtractorPage() {
         {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
 
         <button type="button" className="primary" disabled={isLoading} onClick={handleAnalyze}>
-          {isLoading ? "Analyzing..." : "Analyze Text"}
+          {isLoading ? "Queuing..." : "Analyze Text"}
         </button>
       </section>
 
-      {result ? (
+      {job ? (
+        <section className="panel-block">
+          <h2>Job Status</h2>
+          <p>
+            Job <strong>{job.id}</strong>
+          </p>
+          <p className="muted">Status: {job.status}</p>
+          {job.error_message ? <p className="error-message">{job.error_message}</p> : null}
+
+          <h3>Events</h3>
+          {events.length === 0 ? (
+            <p className="muted">No events yet.</p>
+          ) : (
+            <ul className="plain-list">
+              {events.slice(-20).map((event) => (
+                <li key={`${event.job_id}:${event.sequence}`}>
+                  [{event.sequence}] {String(event.payload.event || event.payload.event_type || "event")}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ) : null}
+
+      {job?.status === "success" && result ? (
         <section className="panel-block">
           <h2>Summary</h2>
           <ul className="plain-list">
