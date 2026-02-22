@@ -71,6 +71,7 @@ def test_generate_anki_deck_enqueues_background_job(mock_create_job, mock_delay,
     payload = response.json()
     assert payload["job"]["id"] == str(job.id)
     assert payload["job"]["status"] == "queued"
+    assert payload["job"]["progress_ratio"] == 0.0
     mock_create_job.assert_called_once()
     mock_delay.assert_called_once_with(str(job.id))
     job.refresh_from_db()
@@ -165,6 +166,7 @@ def test_background_job_cancel_endpoint(mock_revoke, authenticated_api_client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["job"]["status"] == "canceled"
+    assert payload["job"]["status_text"] == "Canceled by user."
     job.refresh_from_db()
     assert job.status == BackgroundJobStatus.CANCELED
     mock_revoke.assert_called_once_with("task-123", terminate=False)
@@ -292,5 +294,6 @@ def test_word_extractor_analyze_enqueues_background_job(
     payload = response.json()
     assert payload["job"]["id"] == str(job.id)
     assert payload["job"]["job_type"] == "word_extractor"
+    assert payload["job"]["progress_ratio"] == 0.0
     mock_create_job.assert_called_once()
     mock_delay.assert_called_once_with(str(job.id))

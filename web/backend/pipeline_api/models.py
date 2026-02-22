@@ -156,6 +156,8 @@ class BackgroundJob(models.Model):
         choices=BackgroundJobStatus.choices,
         default=BackgroundJobStatus.QUEUED,
     )
+    progress_ratio = models.FloatField(default=0.0)
+    status_text = models.CharField(max_length=255, blank=True)
     input_payload = models.JSONField(default=dict)
     result_payload = models.JSONField(default=dict)
     csv_output_path = models.TextField(blank=True)

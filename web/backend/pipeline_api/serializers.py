@@ -101,6 +101,8 @@ class BackgroundJobSummarySerializer(serializers.ModelSerializer):
             "id",
             "job_type",
             "status",
+            "progress_ratio",
+            "status_text",
             "result_payload",
             "csv_output_path",
             "csv_download_name",

@@ -916,6 +916,8 @@ def serialize_background_job(job: BackgroundJob) -> Dict[str, Any]:
         "id": str(job.id),
         "job_type": job.job_type,
         "status": job.status,
+        "progress_ratio": float(job.progress_ratio or 0.0),
+        "status_text": job.status_text,
         "result_payload": dict(job.result_payload or {}),
         "csv_output_path": job.csv_output_path,
         "csv_download_name": job.csv_download_name,
@@ -998,6 +1000,20 @@ def _resolve_workspace_path(path_value: str) -> Path:
     return resolved
 
 
+def update_background_job_progress(
+    *,
+    job_id: str,
+    progress_ratio: float,
+    status_text: str,
+) -> None:
+    clamped_progress = max(0.0, min(1.0, float(progress_ratio)))
+    BackgroundJob.objects.filter(pk=job_id).update(
+        progress_ratio=clamped_progress,
+        status_text=str(status_text or "")[:255],
+        updated_at=timezone.now(),
+    )
+
+
 def resolve_background_job_csv_path(job: BackgroundJob) -> Path:
     if not str(job.csv_output_path or "").strip():
         raise ValueError("CSV output is not available for this job.")
@@ -1057,15 +1073,20 @@ def cancel_background_job_for_owner(*, owner, job_id: str) -> BackgroundJob:
             return job
 
         job.status = BackgroundJobStatus.CANCELED
+        job.status_text = "Canceled by user."
         job.completed_at = timezone.now()
         job.error_message = "Canceled by user."
-        job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+        job.save(
+            update_fields=["status", "status_text", "completed_at", "error_message", "updated_at"]
+        )
 
     record_background_job_event(
         str(job.id),
         {
             "event": "job_canceled",
             "job_type": job.job_type,
+            "progress_ratio": float(job.progress_ratio or 0.0),
+            "status_text": "Canceled by user.",
         },
     )
     return job
@@ -1116,6 +1137,8 @@ def create_anki_background_job(
         owner=owner,
         job_type=BackgroundJobType.ANKI_DECK,
         status=BackgroundJobStatus.QUEUED,
+        progress_ratio=0.0,
+        status_text="Queued",
         input_payload={},
     )
 
@@ -1132,6 +1155,8 @@ def create_anki_background_job(
         {
             "event": "job_queued",
             "job_type": job.job_type,
+            "progress_ratio": 0.0,
+            "status_text": "Queued",
             "csv_name": safe_name,
             "deck_name": resolved_deck_name,
         },
@@ -1157,6 +1182,8 @@ def create_word_extractor_background_job(
         owner=owner,
         job_type=BackgroundJobType.WORD_EXTRACTOR,
         status=BackgroundJobStatus.QUEUED,
+        progress_ratio=0.0,
+        status_text="Queued",
         input_payload={},
     )
 
@@ -1182,6 +1209,8 @@ def create_word_extractor_background_job(
         {
             "event": "job_queued",
             "job_type": job.job_type,
+            "progress_ratio": 0.0,
+            "status_text": "Queued",
             "file_count": len(stored_files),
             "has_text_input": bool(_safe_text(text_input)),
             "min_frequency": safe_min_frequency,
@@ -1197,6 +1226,8 @@ def run_anki_background_job(job_id: str) -> None:
         return
 
     job.status = BackgroundJobStatus.RUNNING
+    job.progress_ratio = 0.05
+    job.status_text = "Starting deck generation..."
     job.started_at = timezone.now()
     job.completed_at = None
     job.error_message = ""
@@ -1207,6 +1238,8 @@ def run_anki_background_job(job_id: str) -> None:
     job.save(
         update_fields=[
             "status",
+            "progress_ratio",
+            "status_text",
             "started_at",
             "completed_at",
             "error_message",
@@ -1218,22 +1251,42 @@ def run_anki_background_job(job_id: str) -> None:
         ]
     )
     BackgroundJobEvent.objects.filter(job=job).delete()
-    record_background_job_event(str(job.id), {"event": "job_start", "job_type": job.job_type})
+    record_background_job_event(
+        str(job.id),
+        {
+            "event": "job_start",
+            "job_type": job.job_type,
+            "progress_ratio": 0.05,
+            "status_text": "Starting deck generation...",
+        },
+    )
 
     try:
         payload = dict(job.input_payload or {})
         csv_path = _resolve_workspace_path(str(payload.get("csv_path", "")))
         csv_bytes = csv_path.read_bytes()
         _ensure_job_not_canceled(str(job.id))
+        update_background_job_progress(
+            job_id=str(job.id),
+            progress_ratio=0.25,
+            status_text="Loaded CSV input.",
+        )
         record_background_job_event(
             str(job.id),
             {
                 "event": "input_loaded",
                 "csv_name": str(payload.get("csv_name", "")),
                 "bytes": len(csv_bytes),
+                "progress_ratio": 0.25,
+                "status_text": "Loaded CSV input.",
             },
         )
 
+        update_background_job_progress(
+            job_id=str(job.id),
+            progress_ratio=0.5,
+            status_text="Generating Anki deck...",
+        )
         artifact = generate_anki_deck_artifact(
             owner=job.owner,
             csv_name=str(payload.get("csv_name", "cards.csv")),
@@ -1242,6 +1295,11 @@ def run_anki_background_job(job_id: str) -> None:
             config_payload=dict(payload.get("config") or {}),
         )
         _ensure_job_not_canceled(str(job.id))
+        update_background_job_progress(
+            job_id=str(job.id),
+            progress_ratio=0.9,
+            status_text="Deck artifact generated.",
+        )
         result_payload = {
             "artifact_id": str(artifact.id),
             "deck_name": artifact.deck_name,
@@ -1252,14 +1310,27 @@ def run_anki_background_job(job_id: str) -> None:
         }
 
         job.status = BackgroundJobStatus.SUCCESS
+        job.progress_ratio = 1.0
+        job.status_text = "Completed successfully."
         job.completed_at = timezone.now()
         job.result_payload = result_payload
-        job.save(update_fields=["status", "completed_at", "result_payload", "updated_at"])
+        job.save(
+            update_fields=[
+                "status",
+                "progress_ratio",
+                "status_text",
+                "completed_at",
+                "result_payload",
+                "updated_at",
+            ]
+        )
         record_background_job_event(
             str(job.id),
             {
                 "event": "job_complete",
                 "job_type": job.job_type,
+                "progress_ratio": 1.0,
+                "status_text": "Completed successfully.",
                 "result": result_payload,
             },
         )
@@ -1267,27 +1338,43 @@ def run_anki_background_job(job_id: str) -> None:
         latest_job = BackgroundJob.objects.get(pk=job_id)
         if latest_job.status != BackgroundJobStatus.CANCELED:
             latest_job.status = BackgroundJobStatus.CANCELED
+            latest_job.status_text = "Canceled by user."
             latest_job.completed_at = timezone.now()
             latest_job.error_message = "Canceled by user."
-            latest_job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+            latest_job.save(
+                update_fields=[
+                    "status",
+                    "status_text",
+                    "completed_at",
+                    "error_message",
+                    "updated_at",
+                ]
+            )
             record_background_job_event(
                 str(latest_job.id),
                 {
                     "event": "job_canceled",
                     "job_type": latest_job.job_type,
+                    "progress_ratio": float(latest_job.progress_ratio or 0.0),
+                    "status_text": "Canceled by user.",
                 },
             )
         return
     except Exception as exc:
         job.status = BackgroundJobStatus.ERROR
+        job.status_text = "Failed."
         job.completed_at = timezone.now()
         job.error_message = str(exc)
-        job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+        job.save(
+            update_fields=["status", "status_text", "completed_at", "error_message", "updated_at"]
+        )
         record_background_job_event(
             str(job.id),
             {
                 "event": "job_error",
                 "job_type": job.job_type,
+                "progress_ratio": float(job.progress_ratio or 0.0),
+                "status_text": "Failed.",
                 "error": str(exc),
             },
         )
@@ -1300,6 +1387,8 @@ def run_word_extractor_background_job(job_id: str) -> None:
         return
 
     job.status = BackgroundJobStatus.RUNNING
+    job.progress_ratio = 0.05
+    job.status_text = "Starting extraction..."
     job.started_at = timezone.now()
     job.completed_at = None
     job.error_message = ""
@@ -1310,6 +1399,8 @@ def run_word_extractor_background_job(job_id: str) -> None:
     job.save(
         update_fields=[
             "status",
+            "progress_ratio",
+            "status_text",
             "started_at",
             "completed_at",
             "error_message",
@@ -1321,7 +1412,15 @@ def run_word_extractor_background_job(job_id: str) -> None:
         ]
     )
     BackgroundJobEvent.objects.filter(job=job).delete()
-    record_background_job_event(str(job.id), {"event": "job_start", "job_type": job.job_type})
+    record_background_job_event(
+        str(job.id),
+        {
+            "event": "job_start",
+            "job_type": job.job_type,
+            "progress_ratio": 0.05,
+            "status_text": "Starting extraction...",
+        },
+    )
 
     try:
         payload = dict(job.input_payload or {})
@@ -1333,6 +1432,11 @@ def run_word_extractor_background_job(job_id: str) -> None:
             file_path = _resolve_workspace_path(str(file_row.get("path", "")))
             uploaded_files.append((name or file_path.name, file_path.read_bytes()))
         _ensure_job_not_canceled(str(job.id))
+        update_background_job_progress(
+            job_id=str(job.id),
+            progress_ratio=0.2,
+            status_text="Loaded input files.",
+        )
 
         record_background_job_event(
             str(job.id),
@@ -1340,9 +1444,16 @@ def run_word_extractor_background_job(job_id: str) -> None:
                 "event": "input_loaded",
                 "file_count": len(uploaded_files),
                 "has_text_input": bool(_safe_text(payload.get("text_input"))),
+                "progress_ratio": 0.2,
+                "status_text": "Loaded input files.",
             },
         )
 
+        update_background_job_progress(
+            job_id=str(job.id),
+            progress_ratio=0.6,
+            status_text="Extracting and filtering words...",
+        )
         result = analyze_word_extractor(
             uploaded_files=uploaded_files,
             text_input=str(payload.get("text_input", "")),
@@ -1351,6 +1462,11 @@ def run_word_extractor_background_job(job_id: str) -> None:
         )
         _ensure_job_not_canceled(str(job.id))
 
+        update_background_job_progress(
+            job_id=str(job.id),
+            progress_ratio=0.85,
+            status_text="Saving CSV output...",
+        )
         csv_output_path, csv_download_name = _persist_word_extractor_csv(job, result)
         result = {
             **result,
@@ -1358,6 +1474,8 @@ def run_word_extractor_background_job(job_id: str) -> None:
             "csv_download_name": csv_download_name,
         }
         job.status = BackgroundJobStatus.SUCCESS
+        job.progress_ratio = 1.0
+        job.status_text = "Completed successfully."
         job.completed_at = timezone.now()
         job.result_payload = result
         job.csv_output_path = csv_output_path
@@ -1365,6 +1483,8 @@ def run_word_extractor_background_job(job_id: str) -> None:
         job.save(
             update_fields=[
                 "status",
+                "progress_ratio",
+                "status_text",
                 "completed_at",
                 "result_payload",
                 "csv_output_path",
@@ -1377,6 +1497,8 @@ def run_word_extractor_background_job(job_id: str) -> None:
             {
                 "event": "job_complete",
                 "job_type": job.job_type,
+                "progress_ratio": 1.0,
+                "status_text": "Completed successfully.",
                 "summary": dict(result.get("summary") or {}),
                 "csv_download_name": csv_download_name,
             },
@@ -1385,27 +1507,43 @@ def run_word_extractor_background_job(job_id: str) -> None:
         latest_job = BackgroundJob.objects.get(pk=job_id)
         if latest_job.status != BackgroundJobStatus.CANCELED:
             latest_job.status = BackgroundJobStatus.CANCELED
+            latest_job.status_text = "Canceled by user."
             latest_job.completed_at = timezone.now()
             latest_job.error_message = "Canceled by user."
-            latest_job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+            latest_job.save(
+                update_fields=[
+                    "status",
+                    "status_text",
+                    "completed_at",
+                    "error_message",
+                    "updated_at",
+                ]
+            )
             record_background_job_event(
                 str(latest_job.id),
                 {
                     "event": "job_canceled",
                     "job_type": latest_job.job_type,
+                    "progress_ratio": float(latest_job.progress_ratio or 0.0),
+                    "status_text": "Canceled by user.",
                 },
             )
         return
     except Exception as exc:
         job.status = BackgroundJobStatus.ERROR
+        job.status_text = "Failed."
         job.completed_at = timezone.now()
         job.error_message = str(exc)
-        job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+        job.save(
+            update_fields=["status", "status_text", "completed_at", "error_message", "updated_at"]
+        )
         record_background_job_event(
             str(job.id),
             {
                 "event": "job_error",
                 "job_type": job.job_type,
+                "progress_ratio": float(job.progress_ratio or 0.0),
+                "status_text": "Failed.",
                 "error": str(exc),
             },
         )

@@ -104,6 +104,7 @@ Additional migrated tab APIs:
   - `POST /api/jobs/{job_id}/retry`
   - `GET /api/jobs/{job_id}/results/csv` (for jobs that produced CSV output)
   - `WS /ws/jobs/{job_id}`
+  - Job responses include `progress_ratio` and `status_text` for live progress UI.
 
 Authentication notes:
 - Django API endpoints now require `Authorization: Token <token>`.
