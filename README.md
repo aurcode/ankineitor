@@ -81,6 +81,21 @@ Pipeline API endpoints:
 - `POST /api/pipeline/runs/{id}/add-category`
 - `WS /ws/pipeline/runs/{id}`
 
+Additional migrated tab APIs:
+- Anki:
+  - `GET /api/anki/presets`
+  - `POST /api/anki/decks/generate`
+  - `GET /api/anki/decks/{artifact_id}/download`
+- Flashcard Reviewer:
+  - `GET /api/flashcards/saved-profiles`
+  - `GET /api/flashcards/saved-files?profile_id=...`
+  - `POST /api/flashcards/datasets/from-saved`
+  - `POST /api/flashcards/datasets/upload`
+  - `GET /api/flashcards/datasets/{dataset_id}`
+  - `GET /api/flashcards/datasets/{dataset_id}/card?index=...`
+- Word Extractor:
+  - `POST /api/word-extractor/analyze`
+
 ### Run Tests Locally
 
 ```bash
@@ -91,7 +106,7 @@ pytest
 Targeted migration tests:
 
 ```bash
-pytest tests/test_web_pipeline_api.py tests/test_web_pipeline_ws.py
+pytest tests/test_web_pipeline_api.py tests/test_web_pipeline_ws.py tests/test_web_tabs_api.py
 cd web/frontend && npm install && npm test
 ```
 

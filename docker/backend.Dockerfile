@@ -17,6 +17,7 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY app ./app
 COPY web/backend ./web/backend
 
 RUN pip install --no-cache-dir -e .
