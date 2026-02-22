@@ -63,36 +63,39 @@ def get_dependencies():
         llm_db = SQLAlchemyClient(db_path="data/ankineitor_llm_cache.db")
         audio_creator = AudioCreator(folder_name="./my_audio_files")
 
-        # This dictionary holds all possible transformations
-        # Ordered logically: basic transformations first, then LLM, then audio for LLM sentences last
-        all_transforms = {
-            "Pinyin": PinyinTransformation(),
-            "Translation (Legacy Google/CEDICT)": TranslationTransformation(
-                lan_in="zh-CN", lan_out="es"
-            ),
-            "Audio": AudioTransformation(audio_creator=audio_creator),
-            "Timestamp": TimestampTransformation(),
-            "LLM (Meanings/Sentences)": LLMTransformation(db_client=llm_db),
-            "LLM Image Prompt (Visual Translator)": LLMImagePromptTransformation(
-                db_client=llm_db
-            ),
-            "LLM Image Renderer (Master Prompt)": LLMImageTransformation(),
-            "LLM Audio (Sentences)": LLMAudioTransformation(audio_creator=audio_creator),
-        }
+        def build_transformations():
+            # Ordered logically: basic transformations first, then LLM, then sentence audio.
+            return {
+                "Pinyin": PinyinTransformation(),
+                "Translation (Legacy Google/CEDICT)": TranslationTransformation(
+                    lan_in="zh-CN", lan_out="es"
+                ),
+                "Audio": AudioTransformation(audio_creator=audio_creator),
+                "Timestamp": TimestampTransformation(),
+                "LLM (Meanings/Sentences)": LLMTransformation(db_client=llm_db),
+                "LLM Image Prompt (Visual Translator)": LLMImagePromptTransformation(
+                    db_client=llm_db
+                ),
+                "LLM Image Renderer (Master Prompt)": LLMImageTransformation(),
+                "LLM Audio (Sentences)": LLMAudioTransformation(audio_creator=audio_creator),
+            }
+
+        # Keep one preview map for UI selection, but build fresh instances per run.
+        all_transforms = build_transformations()
         logger.info("Dependencies initialized successfully.")
-        return pipeline_db, all_transforms
+        return pipeline_db, all_transforms, build_transformations
     except Exception as e:
         logger.critical(f"Failed to initialize dependencies: {e}")
         st.error(
             f"Fatal Error: Could not initialize dependencies. Check logs. Error: {e}"
         )
-        return None, None
+        return None, None, None
 
 
 # --- Main App Execution ---
 
 # Load cached dependencies
-pipeline_db_client, all_transformations = get_dependencies()
+pipeline_db_client, all_transformations, transform_factory = get_dependencies()
 
 st.title("Ankineitor Control Panel ⚙️")
 
@@ -129,7 +132,11 @@ else:
     if selected_tab == tab_list[0]:
         render_anki_tab()
     elif selected_tab == tab_list[1]:
-        render_pipeline_tab(pipeline_db_client, all_transformations)
+        render_pipeline_tab(
+            pipeline_db_client,
+            all_transformations,
+            transform_factory=transform_factory,
+        )
     elif selected_tab == tab_list[2]:
         render_csv_flashcards_tab()
     elif selected_tab == tab_list[3]:

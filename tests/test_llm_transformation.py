@@ -228,6 +228,10 @@ class TestLLMTransformationProcess:
                     assert result["meaning_english"] == "hidden, secret, covert"
                     assert result["sentence_1"] == "他加入了<b>隐秘</b>组织。"
                     assert result["sentence_1_tts_clean"] == "他加入了隐秘组织。"
+                    assert "example_sentences" not in result
+                    assert "improved_meaning" not in result
+                    assert "synonyms_rendered" not in result
+                    assert "sentences_rendered_html" not in result
                     mock_generate.assert_not_called()
 
     def test_cache_miss_generates_dynamic_sentences_and_saves(self, mock_settings):
@@ -302,6 +306,10 @@ class TestLLMTransformationProcess:
                     assert result["sentence_4_tts_clean"] == "组织用暗号传递隐秘命令。"
                     assert result["sentence_4_translation_english"] is not None
                     assert result["sentences_json"]
+                    assert "example_sentences" not in result
+                    assert "improved_meaning" not in result
+                    assert "synonyms_rendered" not in result
+                    assert "sentences_rendered_html" not in result
                     mock_db_client.insert_record.assert_called_once()
 
     def test_sp_russian_payload_maps_tts_clean_sentences(self, mock_settings):
@@ -447,3 +455,93 @@ class TestLLMTransformationApply:
                     result.loc[result["word"] == "你好", "meaning_english"].iloc[0]
                     == "hello"
                 )
+
+
+class TestLLMTransformationJsonHandling:
+    def test_extract_json_payload_handles_fenced_double_encoded_payload(self, mock_settings):
+        mock_db_client = Mock()
+
+        with patch(
+            "ankineitor.pipeline.llm_transformation.get_settings",
+            return_value=mock_settings,
+        ):
+            with patch.object(
+                LLMTransformation, "_build_genai_client", return_value=Mock()
+            ):
+                transformation = LLMTransformation(db_client=mock_db_client)
+                raw = '```json\n"{\\"word\\": \\"隐秘\\", \\"pinyin\\": \\"yǐn mì\\"}"\n```'
+                payload = transformation._extract_json_payload(raw)
+                assert payload["word"] == "隐秘"
+                assert payload["pinyin"] == "yǐn mì"
+
+    def test_extract_json_payload_handles_prefixed_text_and_trailing_notes(
+        self, mock_settings
+    ):
+        mock_db_client = Mock()
+
+        with patch(
+            "ankineitor.pipeline.llm_transformation.get_settings",
+            return_value=mock_settings,
+        ):
+            with patch.object(
+                LLMTransformation, "_build_genai_client", return_value=Mock()
+            ):
+                transformation = LLMTransformation(db_client=mock_db_client)
+                raw = (
+                    "Model output:\n"
+                    '{"word":"隐秘","pinyin":"yǐn mì"}\n'
+                    "diagnostic: extra {ignored} block"
+                )
+                payload = transformation._extract_json_payload(raw)
+                assert payload["word"] == "隐秘"
+                assert payload["pinyin"] == "yǐn mì"
+
+    def test_process_word_persists_raw_response_snapshot(self, mock_settings):
+        mock_db_client = Mock()
+        mock_db_client.find_record.return_value = None
+
+        response_text = json.dumps(
+            {
+                "word": "隐秘",
+                "pinyin": "yǐn mì",
+                "part_of_speech": "Adjective",
+                "character_breakdown": "隐 = hidden, 秘 = secret",
+                "detailed_explanation_english": "hidden, secret, covert",
+                "detailed_explanation_spanish": "oculto, secreto",
+                "synonyms": ["秘密"],
+                "antonyms": ["公开"],
+                "collocations": ["隐秘组织"],
+                "edge_case_notes": "",
+                "sentences": [],
+            },
+            ensure_ascii=False,
+        )
+
+        fake_response = Mock()
+        fake_response.text = response_text
+        fake_response.parsed = None
+        fake_client = Mock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        with patch(
+            "ankineitor.pipeline.llm_transformation.get_settings",
+            return_value=mock_settings,
+        ):
+            with patch.object(
+                LLMTransformation, "_build_genai_client", return_value=fake_client
+            ):
+                transformation = LLMTransformation(db_client=mock_db_client)
+                transformation._raw_response_db_client = Mock()
+                result = transformation.process_word("隐秘")
+
+                assert result is not None
+                transformation._raw_response_db_client.insert_record.assert_called_once()
+                persisted_record = transformation._raw_response_db_client.insert_record.call_args.kwargs[
+                    "record"
+                ]
+                assert persisted_record["raw_response_text"] == response_text
+                assert persisted_record["parse_status"] in {
+                    "parsed_field_validated",
+                    "text_json_validated",
+                }
+                assert persisted_record["normalized_payload_json"] is not None

@@ -1,6 +1,8 @@
 import json
 import hashlib
 import re
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
@@ -149,6 +151,16 @@ class LLMTransformation(Transformation):
     Processes words using Gemini and caches results in a separate database.
     """
 
+    # Legacy duplicate fields should stay internal to cache but not leak into pipeline CSV output.
+    _legacy_pipeline_output_columns = {
+        "synonyms_rendered",
+        "antonyms_rendered",
+        "collocations_rendered",
+        "sentences_rendered_html",
+        "example_sentences",
+        "improved_meaning",
+    }
+
     def __init__(
         self,
         db_client: SQLAlchemyClient,
@@ -173,6 +185,27 @@ class LLMTransformation(Transformation):
             getattr(settings, "llm_profile_db_isolation", True)
         )
         self._profile_db_clients: Dict[str, SQLAlchemyClient] = {}
+        self.llm_raw_response_db_path = (
+            (getattr(settings, "llm_raw_response_db_path", None) or "").strip()
+            or "data/ankineitor_llm_raw_response.db"
+        )
+        self.raw_response_table_name = "llm_raw_response"
+        self._raw_response_columns = [
+            "record_id",
+            "created_at",
+            "cache_key_word",
+            "word",
+            "profile_id",
+            "profile_version",
+            "model_name",
+            "parse_status",
+            "parse_error",
+            "raw_response_text",
+            "extracted_payload_json",
+            "normalized_payload_json",
+        ]
+        self._raw_response_db_client: Optional[SQLAlchemyClient] = None
+        self._last_generation_debug: Dict[str, Optional[str]] = {}
         self.location = settings.gcp_location
         self.project_id = settings.gcp_project_id
         self.credentials_path = settings.vertex_credentials_path or settings.bq_credentials_path
@@ -223,6 +256,16 @@ class LLMTransformation(Transformation):
                 "Gemini credentials are required. Set LLM_API_TOKEN (or GEMINI_API_KEY / GOOGLE_API_KEY), "
                 "or configure Vertex credentials."
             ) from exc
+        try:
+            self._raw_response_db_client = SQLAlchemyClient(
+                db_path=self.llm_raw_response_db_path
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to initialize raw LLM response DB '{}': {}",
+                self.llm_raw_response_db_path,
+                exc,
+            )
 
     @property
     def column_name(self) -> str:
@@ -314,47 +357,139 @@ class LLMTransformation(Transformation):
 
         return str(response)
 
+    def _strip_markdown_fence(self, text: str) -> str:
+        stripped = (text or "").strip()
+        fence_match = re.match(
+            r"^\s*```(?:json|JSON)?\s*(.*?)\s*```\s*$",
+            stripped,
+            flags=re.DOTALL,
+        )
+        if fence_match:
+            return fence_match.group(1).strip()
+        return stripped
+
+    def _decode_nested_json(self, value: Any, max_depth: int = 3) -> Any:
+        current = value
+        for _ in range(max_depth):
+            if not isinstance(current, str):
+                break
+            candidate = self._strip_markdown_fence(current).strip()
+            if not candidate:
+                break
+            try:
+                current = json.loads(candidate)
+            except json.JSONDecodeError:
+                break
+        return current
+
+    def _coerce_payload_object(self, payload: Any) -> Dict[str, Any]:
+        normalized = self._decode_nested_json(payload)
+        if isinstance(normalized, dict):
+            return normalized
+        if (
+            isinstance(normalized, list)
+            and len(normalized) == 1
+            and isinstance(normalized[0], dict)
+        ):
+            return normalized[0]
+        raise ValueError("Model response JSON must be an object.")
+
     def _extract_json_payload(self, text: str) -> Dict[str, Any]:
-        raw = text.strip()
+        raw = (text or "").strip()
+        if not raw:
+            raise ValueError("Model response is empty.")
+
+        # First pass: direct/recursive parse.
         try:
-            payload = json.loads(raw)
-            if isinstance(payload, dict):
-                return payload
-        except json.JSONDecodeError:
+            return self._coerce_payload_object(raw)
+        except Exception:
             pass
 
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            snippet = raw[start : end + 1]
-            payload = json.loads(snippet)
-            if isinstance(payload, dict):
-                return payload
+        # Second pass: extract fenced json block(s).
+        fenced_blocks = re.findall(
+            r"```(?:json|JSON)?\s*(.*?)```",
+            raw,
+            flags=re.DOTALL,
+        )
+        for block in fenced_blocks:
+            try:
+                return self._coerce_payload_object(block)
+            except Exception:
+                continue
+
+        # Third pass: decode first JSON object/array from mixed text.
+        decoder = json.JSONDecoder()
+        for idx, char in enumerate(raw):
+            if char not in "{[":
+                continue
+            try:
+                payload, _ = decoder.raw_decode(raw[idx:])
+            except json.JSONDecodeError:
+                continue
+            try:
+                return self._coerce_payload_object(payload)
+            except Exception:
+                continue
 
         raise ValueError(f"Model response is not valid JSON object: {raw[:200]}")
 
     def _generate_structured_output(
         self, prompt: str, response_model: Type[BaseModel]
     ) -> BaseModel:
+        debug_payload: Dict[str, Optional[str]] = {
+            "raw_response_text": None,
+            "extracted_payload_json": None,
+            "normalized_payload_json": None,
+            "parse_status": "failed",
+            "parse_error": None,
+        }
         generation_config = genai_types.GenerateContentConfig(
             temperature=0.1,
             response_mime_type="application/json",
         )
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config=generation_config,
-        )
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=generation_config,
+            )
 
-        parsed = getattr(response, "parsed", None)
-        if parsed is not None:
-            if isinstance(parsed, response_model):
-                return parsed
-            return response_model.model_validate(parsed)
+            text = self._extract_response_text(response)
+            debug_payload["raw_response_text"] = text
 
-        text = self._extract_response_text(response)
-        payload = self._extract_json_payload(text)
-        return response_model.model_validate(payload)
+            parsed = getattr(response, "parsed", None)
+            if parsed is not None:
+                if isinstance(parsed, response_model):
+                    model_payload = parsed
+                else:
+                    model_payload = response_model.model_validate(parsed)
+                debug_payload["extracted_payload_json"] = json.dumps(
+                    model_payload.model_dump(by_alias=True),
+                    ensure_ascii=False,
+                )
+                debug_payload["normalized_payload_json"] = debug_payload[
+                    "extracted_payload_json"
+                ]
+                debug_payload["parse_status"] = "parsed_field_validated"
+                return model_payload
+
+            payload = self._extract_json_payload(text)
+            debug_payload["extracted_payload_json"] = json.dumps(
+                payload,
+                ensure_ascii=False,
+            )
+            model_payload = response_model.model_validate(payload)
+            debug_payload["normalized_payload_json"] = json.dumps(
+                model_payload.model_dump(by_alias=True),
+                ensure_ascii=False,
+            )
+            debug_payload["parse_status"] = "text_json_validated"
+            return model_payload
+        except Exception as exc:
+            debug_payload["parse_error"] = str(exc)
+            raise
+        finally:
+            self._last_generation_debug = debug_payload
 
     def _resolve_profile(self, word: str):
         del word
@@ -734,6 +869,54 @@ class LLMTransformation(Transformation):
             }
         return None
 
+    def _strip_legacy_output_columns(
+        self, result: Optional[Dict[str, Optional[str]]]
+    ) -> Optional[Dict[str, Optional[str]]]:
+        if result is None:
+            return None
+        return {
+            key: value
+            for key, value in result.items()
+            if key not in self._legacy_pipeline_output_columns
+        }
+
+    def _persist_raw_response_snapshot(self, cache_key_word: str, safe_word: str) -> None:
+        if self._raw_response_db_client is None:
+            return
+
+        snapshot = dict(self._last_generation_debug or {})
+        if not snapshot:
+            return
+
+        record = {
+            "record_id": uuid.uuid4().hex,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "cache_key_word": cache_key_word,
+            "word": safe_word,
+            "profile_id": self.profile.profile_id,
+            "profile_version": self.profile.prompt_version,
+            "model_name": self.model_name,
+            "parse_status": snapshot.get("parse_status"),
+            "parse_error": snapshot.get("parse_error"),
+            "raw_response_text": snapshot.get("raw_response_text"),
+            "extracted_payload_json": snapshot.get("extracted_payload_json"),
+            "normalized_payload_json": snapshot.get("normalized_payload_json"),
+        }
+        try:
+            self._raw_response_db_client.insert_record(
+                record=record,
+                columns=self._raw_response_columns,
+                table_name=self.raw_response_table_name,
+                field_name="record_id",
+            )
+        except Exception as exc:
+            logger.debug(
+                "Failed to persist raw LLM response for '{}' to '{}': {}",
+                safe_word,
+                self.llm_raw_response_db_path,
+                exc,
+            )
+
     def process_word(self, word: str) -> Optional[Dict[str, Optional[str]]]:
         if not word or not word.strip():
             logger.warning("Skipping empty word in LLM transformation.")
@@ -762,11 +945,12 @@ class LLMTransformation(Transformation):
                     logger.debug(
                         f"Skipping LLM for '{safe_word}': found profile data in cache."
                     )
-                    return cached_result
+                    return self._strip_legacy_output_columns(cached_result)
         except Exception as exc:
             logger.error(f"Error checking LLM cache for word '{safe_word}': {exc}")
 
         try:
+            self._last_generation_debug = {}
             response_model = self._get_response_model_for_profile()
 
             @retry(
@@ -790,10 +974,12 @@ class LLMTransformation(Transformation):
                 table_name=self.table_name,
                 field_name=self.field_name,
             )
+            self._persist_raw_response_snapshot(cache_key_word, safe_word)
             logger.debug(f"LLM data for '{safe_word}' processed and saved.")
-            return result
+            return self._strip_legacy_output_columns(result)
 
         except Exception as exc:
+            self._persist_raw_response_snapshot(cache_key_word, safe_word)
             logger.error(f"Failed to process word '{safe_word}' with Gemini after retries: {exc}")
             return None
 

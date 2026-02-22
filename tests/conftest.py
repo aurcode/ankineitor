@@ -25,6 +25,7 @@ def mock_settings():
         settings.google_api_key = None
         settings.pipeline_db_path = "test_pipeline.db"
         settings.llm_cache_db_path = "test_llm_cache.db"
+        settings.llm_raw_response_db_path = "test_llm_raw_response.db"
         settings.audio_output_dir = "./test_audio_files"
         settings.image_output_dir = "./test_image_files"
         settings.llm_model = "gemini-3.1-pro-preview"

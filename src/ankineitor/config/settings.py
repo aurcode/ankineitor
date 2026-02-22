@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # Database settings
     pipeline_db_path: str = "data/ankineitor_pipeline.db"
     llm_cache_db_path: str = "data/ankineitor_llm_cache.db"
+    llm_raw_response_db_path: str = "data/ankineitor_llm_raw_response.db"
     
     # Audio settings
     audio_output_dir: str = "./my_audio_files"
@@ -133,6 +134,7 @@ class Settings(BaseSettings):
         directories = [
             Path(self.pipeline_db_path).parent,
             Path(self.llm_cache_db_path).parent,
+            Path(self.llm_raw_response_db_path).parent,
             Path(self.audio_output_dir),
             Path(self.image_output_dir),
             Path("logs"),

@@ -103,18 +103,6 @@ class TransformationPipeline:
             except Exception as exc:
                 logger.debug(f"Progress callback failed for event '{event}': {exc}")
 
-        def is_missing_value(value: Any) -> bool:
-            if value is None:
-                return True
-            try:
-                if pd.isna(value):
-                    return True
-            except Exception:
-                pass
-            if isinstance(value, str) and not value.strip():
-                return True
-            return False
-
         pipeline_started_at = time.perf_counter()
         logger.info(f"Starting pipeline for {len(words)} words...")
         emit("pipeline_start", total_words=len(words))
@@ -176,19 +164,27 @@ class TransformationPipeline:
         # 3b. Identify cached words that still need selected main outputs.
         backfill_words: List[Any] = []
         if not df_cached.empty and self.main_transformations:
-            cached_columns = set(df_cached.columns)
-            for _, row in df_cached.iterrows():
-                word_value = row.get(self.key_field)
-                if word_value in new_words:
-                    continue
-                needs_backfill = False
-                for transform in self.main_transformations:
-                    column = transform.column_name
-                    if column not in cached_columns or is_missing_value(row.get(column)):
-                        needs_backfill = True
+            cached_candidates = df_cached[
+                ~df_cached[self.key_field].isin(new_words)
+            ].copy()
+            if not cached_candidates.empty:
+                missing_any = pd.Series(False, index=cached_candidates.index)
+                required_columns = [t.column_name for t in self.main_transformations]
+                for column in required_columns:
+                    if column not in cached_candidates.columns:
+                        missing_any = pd.Series(True, index=cached_candidates.index)
                         break
-                if needs_backfill:
-                    backfill_words.append(word_value)
+
+                    column_values = cached_candidates[column]
+                    normalized = column_values.where(column_values.notna(), "")
+                    column_missing = normalized.astype(str).str.strip().eq("")
+                    missing_any = missing_any | column_missing
+                    if missing_any.all():
+                        break
+
+                backfill_words = cached_candidates.loc[
+                    missing_any, self.key_field
+                ].tolist()
 
         logger.info(
             "Found {cached} cached words. Processing {new_count} new words and "
@@ -257,9 +253,8 @@ class TransformationPipeline:
                     if column not in df_new.columns or column not in cached_backfill.columns:
                         continue
                     previous_values = cached_backfill[column].reindex(df_new.index)
-                    preserve_mask = previous_values.map(
-                        lambda value: not is_missing_value(value)
-                    ).fillna(False)
+                    normalized_previous = previous_values.where(previous_values.notna(), "")
+                    preserve_mask = ~normalized_previous.astype(str).str.strip().eq("")
                     if preserve_mask.any():
                         df_new.loc[preserve_mask, column] = previous_values[preserve_mask]
                 df_new = df_new.reset_index()
@@ -278,13 +273,23 @@ class TransformationPipeline:
             # 5b. Backfill cached records with missing fields.
             if backfill_words and self.columns:
                 df_backfill = df_new[df_new[self.key_field].isin(backfill_words)].copy()
-                for record in df_backfill.to_dict("records"):
-                    self.db_client.insert_record(
-                        record=record,
-                        columns=self.columns,
-                        table_name=self.table_name,
-                        field_name=self.key_field,
-                    )
+                backfill_records = df_backfill.to_dict("records")
+                if backfill_records:
+                    if hasattr(self.db_client, "insert_many_records_missing_fields"):
+                        self.db_client.insert_many_records_missing_fields(
+                            records=backfill_records,
+                            columns=self.columns,
+                            table_name=self.table_name,
+                            field_name=self.key_field,
+                        )
+                    else:
+                        for record in backfill_records:
+                            self.db_client.insert_record(
+                                record=record,
+                                columns=self.columns,
+                                table_name=self.table_name,
+                                field_name=self.key_field,
+                            )
 
             # 6. Combine cached and refreshed/new results
             if df_cached.empty:
@@ -434,7 +439,9 @@ class TransformationPipeline:
             logger.info("LLM transformations complete.")
             emit("llm_stage_complete")
 
-        # 8. Merge with original list to preserve order and duplicates
+        # 8. Merge with original list to preserve input order and duplicates.
+        if self.key_field in df_processed.columns:
+            df_processed = df_processed.drop_duplicates(subset=[self.key_field])
 
         # Get all columns from the final processed DataFrame
         final_columns = list(df_processed.columns)
@@ -442,9 +449,6 @@ class TransformationPipeline:
         df_final = pd.merge(
             df_original, df_processed[final_columns], on=self.key_field, how="left"
         )
-
-        # Clean up duplicates that merge might create
-        df_final = df_final.drop_duplicates(subset=[self.key_field])
 
         logger.info(f"Pipeline complete. Returning {len(df_final)} records.")
         emit(

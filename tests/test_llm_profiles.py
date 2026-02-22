@@ -16,6 +16,8 @@ def test_get_llm_profile_defaults_to_lotm_profile():
     assert profile.supports_images is True
     assert profile.default_tts_voice_id == "Chinese (Mandarin)_Mature_Woman"
     assert profile.tts_voice_pool == ()
+    assert profile.always_include_audio_transforms is True
+    assert profile.default_optional_transform_names == ()
 
 
 def test_profile_prompt_renders_placeholders():
@@ -41,3 +43,4 @@ def test_sp_russian_profile_prompt_renders_word():
     assert profile.source_language == "Russian"
     assert profile.supports_images is True
     assert profile.default_tts_voice_id == "Russian_HandsomeChildhoodFriend"
+    assert profile.always_include_audio_transforms is True

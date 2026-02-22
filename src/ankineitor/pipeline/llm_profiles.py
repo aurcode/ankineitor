@@ -26,6 +26,8 @@ class LLMProfile:
     response_schema: str
     default_tts_voice_id: Optional[str] = None
     tts_voice_pool: Tuple[str, ...] = ()
+    always_include_audio_transforms: bool = False
+    default_optional_transform_names: Tuple[str, ...] = ()
 
     def render_prompt(self, word: str) -> str:
         """Render the profile prompt by replacing supported placeholders."""
@@ -136,6 +138,7 @@ LLM_PROFILES: Dict[str, LLMProfile] = {
         prompt_version="2026-02-21-v1",
         response_schema=LOTM_SCHEMA_ID,
         default_tts_voice_id="Chinese (Mandarin)_Mature_Woman",
+        always_include_audio_transforms=True,
     ),
     SP_RUSSIAN_PROFILE_ID: LLMProfile(
         profile_id=SP_RUSSIAN_PROFILE_ID,
@@ -152,6 +155,7 @@ LLM_PROFILES: Dict[str, LLMProfile] = {
         prompt_version="2026-02-21-v1",
         response_schema=SP_RUSSIAN_SCHEMA_ID,
         default_tts_voice_id="Russian_HandsomeChildhoodFriend",
+        always_include_audio_transforms=True,
     ),
 }
 

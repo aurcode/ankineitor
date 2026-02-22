@@ -64,6 +64,25 @@ class LlmInference(Base):
     sentences_rendered_html = Column(Text)
 
 
+class LlmRawResponse(Base):
+    """Maps to the 'llm_raw_response' table."""
+
+    __tablename__ = "llm_raw_response"
+
+    record_id = Column(String, primary_key=True)
+    created_at = Column(String)
+    cache_key_word = Column(String)
+    word = Column(String)
+    profile_id = Column(String)
+    profile_version = Column(String)
+    model_name = Column(String)
+    parse_status = Column(String)
+    parse_error = Column(Text)
+    raw_response_text = Column(Text)
+    extracted_payload_json = Column(Text)
+    normalized_payload_json = Column(Text)
+
+
 class ImagePromptInference(Base):
     """Maps to the 'image_prompt_inference' table."""
 
@@ -119,6 +138,7 @@ class SQLAlchemyClient:
             # Map table names (from processor) to their Model classes
             self._model_map: Dict[str, Type[Base]] = {
                 "llm_inference": LlmInference,
+                "llm_raw_response": LlmRawResponse,
                 "image_prompt_inference": ImagePromptInference,
                 "hanzi_processing": HanziProcessing,
             }
@@ -159,6 +179,22 @@ class SQLAlchemyClient:
                 "antonyms_rendered": "TEXT",
                 "collocations_rendered": "TEXT",
                 "sentences_rendered_html": "TEXT",
+            },
+        )
+        self._ensure_sqlite_columns(
+            table_name="llm_raw_response",
+            columns={
+                "created_at": "TEXT",
+                "cache_key_word": "TEXT",
+                "word": "TEXT",
+                "profile_id": "TEXT",
+                "profile_version": "TEXT",
+                "model_name": "TEXT",
+                "parse_status": "TEXT",
+                "parse_error": "TEXT",
+                "raw_response_text": "TEXT",
+                "extracted_payload_json": "TEXT",
+                "normalized_payload_json": "TEXT",
             },
         )
 
@@ -207,6 +243,19 @@ class SQLAlchemyClient:
         if not model:
             raise ValueError(f"No model found for table name: {table_name}")
         return model
+
+    @staticmethod
+    def _is_missing_value(value: Any) -> bool:
+        """Treat null-like/blank values as missing for backfill updates."""
+        if value is None:
+            return True
+        if isinstance(value, str) and not value.strip():
+            return True
+        # NaN check without pandas dependency.
+        try:
+            return bool(value != value)
+        except Exception:
+            return False
 
     # --- General Func ---
 
@@ -287,8 +336,16 @@ class SQLAlchemyClient:
                 if existing:
                     update_made = False
                     for col in columns:
-                        if col in record and getattr(existing, col) is None:
-                            setattr(existing, col, record[col])
+                        if col not in record:
+                            continue
+                        previous_value = getattr(existing, col)
+                        incoming_value = record[col]
+                        if self._is_missing_value(
+                            previous_value
+                        ) and not self._is_missing_value(
+                            incoming_value
+                        ):
+                            setattr(existing, col, incoming_value)
                             update_made = True
 
                     if update_made:
@@ -337,6 +394,92 @@ class SQLAlchemyClient:
                 )
         except (SQLAlchemyError, ValueError) as e:
             logger.error(f"Error bulk inserting records: {e}")
+
+    def insert_many_records_missing_fields(
+        self,
+        records: List[Dict[str, Any]],
+        columns: List[str],
+        table_name: str,
+        field_name: str,
+    ) -> None:
+        """
+        Insert or update many records in one transaction.
+        Existing rows only receive values for currently missing fields.
+        """
+        if not records:
+            return
+
+        try:
+            model = self._get_model(table_name)
+            key_column = getattr(model, field_name)
+
+            normalized_records: List[Dict[str, Any]] = []
+            seen_keys = set()
+            for record in records:
+                if field_name not in record:
+                    continue
+                key_value = record[field_name]
+                if key_value in seen_keys:
+                    continue
+                normalized_records.append(record)
+                seen_keys.add(key_value)
+
+            if not normalized_records:
+                return
+
+            key_values = [record[field_name] for record in normalized_records]
+            inserted_count = 0
+            updated_count = 0
+
+            with self._get_session() as session:
+                existing_instances = session.query(model).filter(
+                    key_column.in_(key_values)
+                ).all()
+                existing_by_key = {
+                    getattr(instance, field_name): instance
+                    for instance in existing_instances
+                }
+
+                for record in normalized_records:
+                    key_value = record[field_name]
+                    existing = existing_by_key.get(key_value)
+
+                    if existing is None:
+                        valid_data = {
+                            c.name: record.get(c.name)
+                            for c in model.__table__.columns
+                            if c.name in record
+                        }
+                        session.add(model(**valid_data))
+                        inserted_count += 1
+                        continue
+
+                    update_made = False
+                    for col in columns:
+                        if col not in record:
+                            continue
+                        previous_value = getattr(existing, col)
+                        incoming_value = record[col]
+                        if self._is_missing_value(
+                            previous_value
+                        ) and not self._is_missing_value(incoming_value):
+                            setattr(existing, col, incoming_value)
+                            update_made = True
+
+                    if update_made:
+                        session.merge(existing)
+                        updated_count += 1
+
+            logger.info(
+                "Bulk upserted {} record(s) in '{}' (inserted={}, updated={}).".format(
+                    len(normalized_records),
+                    table_name,
+                    inserted_count,
+                    updated_count,
+                )
+            )
+        except (SQLAlchemyError, ValueError) as e:
+            logger.error(f"Error bulk upserting records with missing-fields policy: {e}")
 
     def update_field(
         self,

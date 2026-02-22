@@ -39,6 +39,7 @@ class TestSettingsValidation:
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None)
             assert settings.pipeline_db_path == "data/ankineitor_pipeline.db"
+            assert settings.llm_raw_response_db_path == "data/ankineitor_llm_raw_response.db"
             assert settings.llm_model == "gemini-3.1-pro-preview"
             assert settings.llm_image_prompt_model == "gemini-3.1-pro-preview"
             assert settings.llm_image_master_prompt_template is None
@@ -123,6 +124,7 @@ class TestSettingsDirectories:
             _env_file=None,
             pipeline_db_path=str(temp_dir / "data" / "pipeline.db"),
             llm_cache_db_path=str(temp_dir / "data" / "llm_cache.db"),
+            llm_raw_response_db_path=str(temp_dir / "data" / "llm_raw.db"),
             audio_output_dir=str(temp_dir / "audio"),
             image_output_dir=str(temp_dir / "images"),
         )

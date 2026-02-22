@@ -121,20 +121,41 @@ def _first_non_empty(row: pd.Series, columns: List[str]) -> str:
 
 
 def _try_parse_json(raw_value: Any) -> Any:
+    if isinstance(raw_value, (dict, list)):
+        return raw_value
     text = _safe_text(raw_value)
     if not text:
         return None
-    try:
-        return json.loads(text)
-    except Exception:
-        return None
+
+    candidate = text
+    for _ in range(3):
+        stripped = candidate.strip()
+        fenced = re.match(
+            r"^\s*```(?:json|JSON)?\s*(.*?)\s*```\s*$",
+            stripped,
+            flags=re.DOTALL,
+        )
+        if fenced:
+            stripped = fenced.group(1).strip()
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return None
+        if isinstance(parsed, str):
+            candidate = parsed
+            continue
+        return parsed
+    return None
 
 
 def _json_item_to_text(item: Any) -> str:
     if isinstance(item, dict):
         parts: List[str] = []
         for key, value in item.items():
-            value_text = _safe_text(value)
+            if isinstance(value, (dict, list)):
+                value_text = json.dumps(value, ensure_ascii=False)
+            else:
+                value_text = _safe_text(value)
             if value_text:
                 parts.append(f"{key}: {value_text}")
         if parts:
@@ -182,6 +203,8 @@ def _parse_json_list(raw_value: Any) -> List[str]:
     if isinstance(parsed, list):
         normalized = [_json_item_to_text(item) for item in parsed]
         return [value for value in normalized if value]
+    if isinstance(parsed, dict):
+        return [_json_item_to_text(parsed)]
     return []
 
 
@@ -405,6 +428,10 @@ def _sentence_entries_from_columns(row: pd.Series) -> List[Dict[str, str]]:
 
 def _sentence_entries_from_json(row: pd.Series) -> List[Dict[str, str]]:
     parsed_json = _try_parse_json(row.get("sentences_json"))
+    if isinstance(parsed_json, dict):
+        nested_sentences = parsed_json.get("sentences")
+        if isinstance(nested_sentences, list):
+            parsed_json = nested_sentences
     if not isinstance(parsed_json, list):
         return []
 
