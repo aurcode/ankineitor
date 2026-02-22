@@ -123,6 +123,8 @@ export interface BackgroundJobSummary {
   id: string;
   job_type: BackgroundJobType;
   status: BackgroundJobStatus;
+  progress_ratio: number;
+  status_text: string;
   result_payload: Record<string, unknown>;
   csv_output_path: string;
   csv_download_name: string;

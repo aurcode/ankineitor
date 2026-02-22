@@ -83,6 +83,11 @@ function formatTimestamp(value: string | null): string {
   }
 }
 
+function formatPercent(value: number): string {
+  const safe = Math.max(0, Math.min(1, Number(value || 0)));
+  return `${Math.round(safe * 100)}%`;
+}
+
 export function AnkiDeckPage() {
   const [presets, setPresets] = useState<AnkiPresetsResponse | null>(null);
   const [presetKey, setPresetKey] = useState<"default" | "chinese_pipeline">("default");
@@ -334,6 +339,7 @@ export function AnkiDeckPage() {
               <li key={historyJob.id}>
                 <strong>{historyJob.status}</strong> - {formatTimestamp(historyJob.created_at)} -{" "}
                 <code>{historyJob.id}</code>{" "}
+                <span className="muted">({formatPercent(historyJob.progress_ratio)})</span>{" "}
                 <button
                   type="button"
                   className="secondary"
@@ -364,6 +370,8 @@ export function AnkiDeckPage() {
             Job <strong>{job.id}</strong>
           </p>
           <p className="muted">Status: {job.status}</p>
+          <progress value={Math.max(0, Math.min(100, Math.round((job.progress_ratio || 0) * 100)))} max={100} />
+          <p className="muted">{job.status_text || "In progress..."}</p>
           {job.error_message ? <p className="error-message">{job.error_message}</p> : null}
 
           {job.status === "success" && ankiResult ? (
