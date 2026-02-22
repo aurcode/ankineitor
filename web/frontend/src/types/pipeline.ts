@@ -108,3 +108,129 @@ export interface PipelineWebsocketMessage {
   type: "pipeline_event";
   event: PipelineEventEnvelope;
 }
+
+export interface AnkiField {
+  name: string;
+}
+
+export interface AnkiModelBuilderEntry {
+  csv_column: string;
+}
+
+export interface AnkiMediaField {
+  column_name: string;
+  media_type: string;
+}
+
+export interface AnkiConfigPayload {
+  model_id: number;
+  model_name: string;
+  deck_id: number;
+  note_type: string;
+  model_fields: AnkiField[];
+  model_builder: AnkiModelBuilderEntry[];
+  media_fields: AnkiMediaField[];
+  model_templates_yaml: string | Record<string, unknown>;
+  tag_rules_yaml: string | unknown[];
+}
+
+export interface AnkiPresetsResponse {
+  default: AnkiConfigPayload;
+  chinese_pipeline: AnkiConfigPayload;
+}
+
+export interface GenerateAnkiDeckResponse {
+  artifact_id: string;
+  deck_name: string;
+  source_csv_name: string;
+  file_size_bytes: number;
+  download_url: string;
+  created_at: string;
+}
+
+export interface FlashcardSavedFile {
+  file_name: string;
+  file_path: string;
+  modified_at: string | null;
+  size_bytes: number;
+}
+
+export interface FlashcardSavedProfilesResponse {
+  profiles: string[];
+}
+
+export interface FlashcardSavedFilesResponse {
+  profile_id: string;
+  files: FlashcardSavedFile[];
+}
+
+export interface FlashcardDatasetSummary {
+  dataset_id: string;
+  source_type: "saved" | "upload";
+  source_label: string;
+  total_cards: number;
+  columns: string[];
+  available_profiles: string[];
+  created_at: string;
+}
+
+export interface FlashcardFrontView {
+  word: string;
+  pronunciation: string;
+  part_of_speech: string;
+  register: string;
+  profile_id: string;
+  timestamp: string;
+  audio: string;
+}
+
+export interface FlashcardSentenceView {
+  index: string;
+  sentence: string;
+  tts_clean: string;
+  cloze: string;
+  pronunciation: string;
+  translation_english: string;
+  translation_spanish: string;
+  audio: string;
+}
+
+export interface FlashcardBackView {
+  meaning_english: string;
+  meaning_spanish: string;
+  details: Record<string, string>;
+  relationships: {
+    synonyms: string[];
+    antonyms: string[];
+    collocations: string[];
+  };
+  sentences: FlashcardSentenceView[];
+  image: Record<string, string>;
+}
+
+export interface FlashcardCardResponse {
+  index: number;
+  total: number;
+  front: FlashcardFrontView;
+  back: FlashcardBackView;
+  raw_row: Record<string, string | number | boolean | null>;
+}
+
+export interface WordExtractorSummary {
+  initial_count: number;
+  filtered_count: number;
+  removed_count: number;
+  final_count: number;
+  min_frequency: number;
+  applied_hsk_levels: string[];
+}
+
+export interface WordExtractorResponse {
+  initial_words: Array<Record<string, string | number | null>>;
+  filtered_words: Array<Record<string, string | number | null>>;
+  removed_words: Array<Record<string, string | number | null>>;
+  final_words: Array<Record<string, string | number | null>>;
+  copyable_word_list: string;
+  extraction_errors: Record<string, string>;
+  summary: WordExtractorSummary;
+}
