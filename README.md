@@ -75,6 +75,7 @@ Service URLs:
 - Django API: `http://localhost:8000`
 
 Pipeline API endpoints:
+- `POST /api/auth/token` (returns DRF token for username/password)
 - `POST /api/pipeline/runs`
 - `GET /api/pipeline/runs/{id}`
 - `GET /api/pipeline/runs/{id}/results`
@@ -84,7 +85,7 @@ Pipeline API endpoints:
 Additional migrated tab APIs:
 - Anki:
   - `GET /api/anki/presets`
-  - `POST /api/anki/decks/generate`
+  - `POST /api/anki/decks/generate` (creates async background job)
   - `GET /api/anki/decks/{artifact_id}/download`
 - Flashcard Reviewer:
   - `GET /api/flashcards/saved-profiles`
@@ -94,7 +95,15 @@ Additional migrated tab APIs:
   - `GET /api/flashcards/datasets/{dataset_id}`
   - `GET /api/flashcards/datasets/{dataset_id}/card?index=...`
 - Word Extractor:
-  - `POST /api/word-extractor/analyze`
+  - `POST /api/word-extractor/analyze` (creates async background job)
+- Background jobs:
+  - `GET /api/jobs/{job_id}`
+  - `GET /api/jobs/{job_id}/events`
+  - `WS /ws/jobs/{job_id}`
+
+Authentication notes:
+- Django API endpoints now require `Authorization: Token <token>`.
+- Websocket endpoints require `?token=<token>` query parameter.
 
 ### Run Tests Locally
 
