@@ -103,6 +103,18 @@ class TransformationPipeline:
             except Exception as exc:
                 logger.debug(f"Progress callback failed for event '{event}': {exc}")
 
+        def is_missing_value(value: Any) -> bool:
+            if value is None:
+                return True
+            try:
+                if pd.isna(value):
+                    return True
+            except Exception:
+                pass
+            if isinstance(value, str) and not value.strip():
+                return True
+            return False
+
         pipeline_started_at = time.perf_counter()
         logger.info(f"Starting pipeline for {len(words)} words...")
         emit("pipeline_start", total_words=len(words))
@@ -159,20 +171,58 @@ class TransformationPipeline:
             new_words = [w for w in unique_words if w not in processed_words]
         else:
             new_words = unique_words
+        new_words = list(new_words)
+
+        # 3b. Identify cached words that still need selected main outputs.
+        backfill_words: List[Any] = []
+        if not df_cached.empty and self.main_transformations:
+            cached_columns = set(df_cached.columns)
+            for _, row in df_cached.iterrows():
+                word_value = row.get(self.key_field)
+                if word_value in new_words:
+                    continue
+                needs_backfill = False
+                for transform in self.main_transformations:
+                    column = transform.column_name
+                    if column not in cached_columns or is_missing_value(row.get(column)):
+                        needs_backfill = True
+                        break
+                if needs_backfill:
+                    backfill_words.append(word_value)
 
         logger.info(
-            f"Found {len(df_cached)} cached words. Processing {len(new_words)} new words with main transforms."
+            "Found {cached} cached words. Processing {new_count} new words and "
+            "{backfill_count} cached words missing selected main outputs."
+            .format(
+                cached=len(df_cached),
+                new_count=len(new_words),
+                backfill_count=len(backfill_words),
+            )
         )
         emit(
             "cache_checked",
             cached_words=len(df_cached),
             new_words=len(new_words),
+            backfill_words=len(backfill_words),
             total_unique_words=len(unique_words),
         )
 
-        # 4. Process only new words through the *main* pipeline
-        if len(new_words) > 0:
-            df_new = pd.DataFrame({self.key_field: new_words})
+        # 4. Process new words and cached words that need backfilling through main pipeline
+        words_needing_main = list(new_words) + [
+            word for word in backfill_words if word not in new_words
+        ]
+        if len(words_needing_main) > 0:
+            df_new = pd.DataFrame({self.key_field: words_needing_main})
+            if backfill_words:
+                cached_backfill = df_cached[
+                    df_cached[self.key_field].isin(backfill_words)
+                ].copy()
+                if not cached_backfill.empty:
+                    # Seed with cached rows so existing non-missing fields can be preserved.
+                    df_new = pd.concat([cached_backfill, df_new], ignore_index=True)
+                    df_new = df_new.drop_duplicates(
+                        subset=[self.key_field], keep="first"
+                    )
 
             # Run each main transformation
             for transform in self.main_transformations:
@@ -195,15 +245,58 @@ class TransformationPipeline:
                     output_rows=len(df_new),
                 )
 
-            # 5. Save new results to cache (DB) in bulk
-            logger.debug(f"Saving {len(df_new)} new records to database...")
-            new_records = df_new.to_dict("records")
-            self.db_client.insert_many_records(
-                records=new_records, table_name=self.table_name
-            )
+            # Preserve existing non-missing main outputs for cached backfill rows.
+            if backfill_words and not df_cached.empty and self.columns:
+                cached_backfill = (
+                    df_cached[df_cached[self.key_field].isin(backfill_words)]
+                    .copy()
+                    .set_index(self.key_field)
+                )
+                df_new = df_new.copy().set_index(self.key_field)
+                for column in self.columns:
+                    if column not in df_new.columns or column not in cached_backfill.columns:
+                        continue
+                    previous_values = cached_backfill[column].reindex(df_new.index)
+                    preserve_mask = previous_values.map(
+                        lambda value: not is_missing_value(value)
+                    ).fillna(False)
+                    if preserve_mask.any():
+                        df_new.loc[preserve_mask, column] = previous_values[preserve_mask]
+                df_new = df_new.reset_index()
 
-            # 6. Combine cached and new results
-            df_processed = pd.concat([df_cached, df_new], ignore_index=True)
+            # 5. Save truly new records in bulk
+            if len(new_words) > 0:
+                df_new_only = df_new[df_new[self.key_field].isin(new_words)].copy()
+                if not df_new_only.empty:
+                    logger.debug(
+                        f"Saving {len(df_new_only)} new records to database..."
+                    )
+                    self.db_client.insert_many_records(
+                        records=df_new_only.to_dict("records"), table_name=self.table_name
+                    )
+
+            # 5b. Backfill cached records with missing fields.
+            if backfill_words and self.columns:
+                df_backfill = df_new[df_new[self.key_field].isin(backfill_words)].copy()
+                for record in df_backfill.to_dict("records"):
+                    self.db_client.insert_record(
+                        record=record,
+                        columns=self.columns,
+                        table_name=self.table_name,
+                        field_name=self.key_field,
+                    )
+
+            # 6. Combine cached and refreshed/new results
+            if df_cached.empty:
+                df_processed = df_new
+            else:
+                refreshed_words = set(words_needing_main)
+                df_remaining_cached = df_cached[
+                    ~df_cached[self.key_field].isin(refreshed_words)
+                ]
+                df_processed = pd.concat(
+                    [df_remaining_cached, df_new], ignore_index=True
+                )
         else:
             df_processed = df_cached  # No new words, just use cached data
 

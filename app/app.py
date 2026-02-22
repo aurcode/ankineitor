@@ -23,6 +23,7 @@ from ankineitor.pipeline.llm_image_transformation import LLMImageTransformation
 # Import the render functions from their new files
 from tabs.pipeline_tab import render_pipeline_tab
 from tabs.merge_csv_tab import render_merge_csv_tab
+from tabs.csv_flashcards_tab import render_csv_flashcards_tab
 from tabs.word_extractor_tab import word_extractor_tab
 
 # --- Anki Tab (Mandatory) ---
@@ -102,6 +103,7 @@ else:
     tab_list = [
         "🤖 Anki Deck Generator",
         "🚀 Run Pipeline",
+        "🃏 Flashcard Reviewer",
         "📊 Merge CSVs",
         "🔠 Word Extractor",
     ]
@@ -129,6 +131,8 @@ else:
     elif selected_tab == tab_list[1]:
         render_pipeline_tab(pipeline_db_client, all_transformations)
     elif selected_tab == tab_list[2]:
-        render_merge_csv_tab()
+        render_csv_flashcards_tab()
     elif selected_tab == tab_list[3]:
+        render_merge_csv_tab()
+    elif selected_tab == tab_list[4]:
         word_extractor_tab()

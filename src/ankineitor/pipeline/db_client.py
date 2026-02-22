@@ -46,6 +46,13 @@ class LlmInference(Base):
     character_breakdown = Column(Text)
     detailed_explanation_english = Column(Text)
     detailed_explanation_spanish = Column(Text)
+    word_with_stress = Column(Text)
+    romanization = Column(Text)
+    aspect_pair = Column(Text)
+    register = Column(Text)
+    grammar_formula = Column(Text)
+    mnemonic_hook_spanish = Column(Text)
+    piter_summer_variant = Column(Text)
     edge_case_notes = Column(Text)
     synonyms_json = Column(Text)
     antonyms_json = Column(Text)
@@ -136,6 +143,13 @@ class SQLAlchemyClient:
                 "character_breakdown": "TEXT",
                 "detailed_explanation_english": "TEXT",
                 "detailed_explanation_spanish": "TEXT",
+                "word_with_stress": "TEXT",
+                "romanization": "TEXT",
+                "aspect_pair": "TEXT",
+                "register": "TEXT",
+                "grammar_formula": "TEXT",
+                "mnemonic_hook_spanish": "TEXT",
+                "piter_summer_variant": "TEXT",
                 "edge_case_notes": "TEXT",
                 "synonyms_json": "TEXT",
                 "antonyms_json": "TEXT",

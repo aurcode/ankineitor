@@ -23,10 +23,16 @@ class Settings(BaseSettings):
     # Audio settings
     audio_output_dir: str = "./my_audio_files"
     image_output_dir: str = "./my_image_files"
+    minimax_api_token: Optional[str] = None
+    minimax_group_id: Optional[str] = None
+    minimax_tts_model: str = "speech-2.8-hd"
+    minimax_tts_voice_id: Optional[str] = None
+    minimax_tts_base_url: str = "https://api.minimaxi.com"
+    minimax_tts_timeout_seconds: int = 60
     
     # LLM settings
-    llm_model: str = "gemini-3-flash-preview"
-    llm_image_prompt_model: str = "gemini-3-flash-preview"
+    llm_model: str = "gemini-3.1-pro-preview"
+    llm_image_prompt_model: str = "gemini-3.1-pro-preview"
     llm_image_master_prompt_template: Optional[str] = None
     llm_image_do_not_generate_terms: list = [
         "与",

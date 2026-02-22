@@ -27,8 +27,8 @@ def mock_settings():
         settings.llm_cache_db_path = "test_llm_cache.db"
         settings.audio_output_dir = "./test_audio_files"
         settings.image_output_dir = "./test_image_files"
-        settings.llm_model = "gemini-3-flash-preview"
-        settings.llm_image_prompt_model = "gemini-3-flash-preview"
+        settings.llm_model = "gemini-3.1-pro-preview"
+        settings.llm_image_prompt_model = "gemini-3.1-pro-preview"
         settings.llm_image_master_prompt_template = None
         settings.llm_image_do_not_generate_terms = ["与", "一个", "不会"]
         settings.llm_image_model = "gemini-3-pro-image-preview"

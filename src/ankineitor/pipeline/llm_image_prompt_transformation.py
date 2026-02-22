@@ -28,7 +28,7 @@ from .transformations import Transformation
 load_dotenv()
 
 
-DEFAULT_IMAGE_PROMPT_MODEL = "gemini-3-flash-preview"
+DEFAULT_IMAGE_PROMPT_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_DO_NOT_GENERATE_TERMS = [
     "与",
     "一个",
@@ -124,6 +124,12 @@ def _normalize_image_term_type(value: Optional[str]) -> str:
     return "abstract_grammar"
 
 
+def _normalize_language_name(language: Optional[str]) -> str:
+    if not language:
+        return ""
+    return "".join(ch for ch in str(language).strip().lower() if ch.isalnum())
+
+
 class LLMImagePromptTransformation(Transformation):
     """
     Stage 1: builds a strict master image prompt from each vocabulary word.
@@ -136,11 +142,13 @@ class LLMImagePromptTransformation(Transformation):
         max_retries: int = 3,
         table_name: str = "image_prompt_inference",
         do_not_generate_terms: Optional[List[str]] = None,
+        source_language: str = "Chinese (Simplified)",
     ):
         self.db_client = db_client
         self.table_name = table_name
         self.field_name = "word"
         self.max_retries = max_retries
+        self.source_language = source_language
 
         settings = get_settings()
         configured_prompt_model = getattr(settings, "llm_image_prompt_model", None)
@@ -315,17 +323,28 @@ class LLMImagePromptTransformation(Transformation):
 
     def _build_cache_key_word(self, word: str) -> str:
         blocked_terms_scope = ",".join(sorted(self.blocked_terms))
+        normalized_source_language = _normalize_language_name(self.source_language)
         cache_scope = "|".join(
             [
                 self.model_name,
                 self.master_prompt_template,
                 blocked_terms_scope,
+                normalized_source_language,
             ]
         )
         cache_hash = hashlib.sha256(cache_scope.encode("utf-8")).hexdigest()[:12]
         return f"{cache_hash}::{word}"
 
     def _build_visual_prompt(self, word: str) -> str:
+        normalized_source_language = _normalize_language_name(self.source_language)
+        russian_context_hint = ""
+        if normalized_source_language in {"russian", "ru"}:
+            russian_context_hint = (
+                "- For Russian words, keep the same Victorian gaslamp aesthetic and "
+                "when relevant evoke Saint Petersburg canals, wrought-iron bridges, "
+                "cobblestone embankments, and White Nights atmosphere.\n"
+            )
+
         return (
             "You are a visual translator for language-learning flashcard image prompts.\n"
             "Return ONLY a JSON object with keys: image_term_type, visual_description.\n"
@@ -335,6 +354,7 @@ class LLMImagePromptTransformation(Transformation):
             "- verb_action: dynamic close-up action, avoid full faces.\n"
             "- abstract_grammar: create a physical metaphor using gaslamp fantasy aesthetics.\n"
             "- proper_noun: moody atmospheric portrait or location depiction.\n"
+            f"{russian_context_hint}"
             "The visual_description must be concise but evocative English.\n"
             "Never include written text, letters, symbols, labels, signage, or speech bubbles in the scene.\n"
             "Input vocabulary word:\n"

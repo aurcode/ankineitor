@@ -17,7 +17,11 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm import tqdm
 
 from .db_client import SQLAlchemyClient
-from .llm_profiles import get_llm_profile
+from .llm_profiles import (
+    LOTM_SCHEMA_ID,
+    SP_RUSSIAN_SCHEMA_ID,
+    get_llm_profile,
+)
 from .transformations import Transformation
 from ..config import get_settings
 from ..security.exceptions import ValidationError
@@ -30,6 +34,10 @@ class SentencePayload(BaseModel):
 
     target_language_highlighted: str = Field(
         description="Sentence containing the highlighted target word."
+    )
+    tts_clean_sentence: str = Field(
+        default="",
+        description="TTS-friendly sentence without markup.",
     )
     target_language_cloze: str = Field(
         description="Same sentence with the target word replaced by blanks."
@@ -55,6 +63,49 @@ class LLMWordPayload(BaseModel):
     collocations: List[str] = Field(default_factory=list)
     edge_case_notes: str = ""
     sentences: List[SentencePayload] = Field(default_factory=list)
+
+
+class SPRussianSentencePayload(BaseModel):
+    """Structured sentence entry for SP Russian profile output."""
+
+    target_language_highlighted: str = Field(
+        description="Sentence containing the highlighted target word."
+    )
+    tts_clean_sentence: str = Field(
+        description="TTS-friendly sentence without stress marks or markup."
+    )
+    target_language_cloze: str = Field(
+        description="Same sentence with the target word replaced by blanks."
+    )
+    sentence_romanization: str = Field(
+        description="Romanized sentence with stress marks."
+    )
+    translation_english: str = Field(description="Natural English sentence translation.")
+    translation_spanish: str = Field(
+        default="", description="Natural Spanish sentence translation."
+    )
+
+
+class SPRussianWordPayload(BaseModel):
+    """Structured SP Russian profile output for a single target word."""
+
+    word: str
+    word_with_stress: str
+    romanization: str
+    part_of_speech: str
+    aspect_pair: str = ""
+    morphological_breakdown: str
+    register_label: str = Field(alias="register")
+    grammar_formula: str = ""
+    detailed_explanation_english: str
+    detailed_explanation_spanish: str
+    mnemonic_hook_spanish: str
+    piter_summer_variant: str
+    synonyms: List[str] = Field(default_factory=list)
+    antonyms: List[str] = Field(default_factory=list)
+    collocations: List[str] = Field(default_factory=list)
+    edge_case_notes: str = ""
+    sentences: List[SPRussianSentencePayload] = Field(default_factory=list)
 
 
 def _normalize_token(raw_token: Optional[str]) -> Optional[str]:
@@ -90,7 +141,7 @@ def _resolve_model_name(model_name: str) -> str:
     for prefix in ("vertex_ai/", "vertexai/"):
         if cleaned.startswith(prefix):
             return cleaned[len(prefix) :]
-    return cleaned or "gemini-3-flash-preview"
+    return cleaned or "gemini-3.1-pro-preview"
 
 
 class LLMTransformation(Transformation):
@@ -139,6 +190,13 @@ class LLMTransformation(Transformation):
             "character_breakdown",
             "detailed_explanation_english",
             "detailed_explanation_spanish",
+            "word_with_stress",
+            "romanization",
+            "aspect_pair",
+            "register",
+            "grammar_formula",
+            "mnemonic_hook_spanish",
+            "piter_summer_variant",
             "edge_case_notes",
             "synonyms_json",
             "antonyms_json",
@@ -351,6 +409,12 @@ class LLMTransformation(Transformation):
     def _build_profile_prompt(self, word: str) -> str:
         return self.profile.render_prompt(word)
 
+    def _get_response_model_for_profile(self) -> Type[BaseModel]:
+        schema = (self.profile.response_schema or "").strip()
+        if schema == SP_RUSSIAN_SCHEMA_ID:
+            return SPRussianWordPayload
+        return LLMWordPayload
+
     def _as_clean_list(self, items: List[str]) -> List[str]:
         cleaned: List[str] = []
         for item in items or []:
@@ -366,6 +430,7 @@ class LLMTransformation(Transformation):
         part_of_speech: Optional[str],
         character_breakdown: Optional[str],
         edge_case_notes: Optional[str],
+        extra_lines: Optional[List[str]] = None,
     ) -> Optional[str]:
         lines: List[str] = []
         if detailed_en:
@@ -378,23 +443,33 @@ class LLMTransformation(Transformation):
             lines.append(f"Breakdown: {character_breakdown}")
         if edge_case_notes:
             lines.append(f"Notes: {edge_case_notes}")
+        for line in extra_lines or []:
+            value = str(line).strip()
+            if value:
+                lines.append(value)
         return "\n".join(lines) if lines else None
 
-    def _build_sentences_rendered_html(self, sentences: List[SentencePayload]) -> Optional[str]:
+    def _build_sentences_rendered_html(self, sentences: List[Any]) -> Optional[str]:
         if not sentences:
             return None
 
         lines: List[str] = ["<ol>"]
         for sentence in sentences:
-            highlighted = sentence.target_language_highlighted.strip()
-            pinyin = sentence.sentence_pinyin.strip()
-            trans_en = sentence.translation_english.strip()
-            trans_es = sentence.translation_spanish.strip()
+            highlighted = str(
+                getattr(sentence, "target_language_highlighted", "") or ""
+            ).strip()
+            phonetic = str(
+                getattr(sentence, "sentence_pinyin", None)
+                or getattr(sentence, "sentence_romanization", None)
+                or ""
+            ).strip()
+            trans_en = str(getattr(sentence, "translation_english", "") or "").strip()
+            trans_es = str(getattr(sentence, "translation_spanish", "") or "").strip()
 
             lines.append("<li>")
             lines.append(highlighted)
-            if pinyin:
-                lines.append(f"<br><i>{pinyin}</i>")
+            if phonetic:
+                lines.append(f"<br><i>{phonetic}</i>")
             if trans_en:
                 lines.append(f"<br>EN: {trans_en}")
             if trans_es:
@@ -404,7 +479,23 @@ class LLMTransformation(Transformation):
         lines.append("</ol>")
         return "".join(lines)
 
-    def _payload_to_result(self, safe_word: str, payload_obj: LLMWordPayload) -> Dict[str, Optional[str]]:
+    def _resolve_tts_clean_sentence(self, sentence: Any) -> Optional[str]:
+        """Use explicit TTS text when provided, otherwise strip markup from highlighted."""
+        explicit_tts = str(getattr(sentence, "tts_clean_sentence", "") or "").strip()
+        if explicit_tts:
+            return explicit_tts
+
+        highlighted = str(getattr(sentence, "target_language_highlighted", "") or "").strip()
+        if not highlighted:
+            return None
+
+        # Fallback keeps backwards compatibility with older payloads lacking tts_clean_sentence.
+        cleaned = re.sub(r"<[^>]+>", "", highlighted).strip()
+        return cleaned or None
+
+    def _payload_to_result_lotm(
+        self, safe_word: str, payload_obj: LLMWordPayload
+    ) -> Dict[str, Optional[str]]:
         normalized_word = (payload_obj.word or "").strip() or safe_word
         pinyin_value = (payload_obj.pinyin or "").strip() or None
         part_of_speech = (payload_obj.part_of_speech or "").strip() or None
@@ -421,7 +512,7 @@ class LLMTransformation(Transformation):
         sentences_json = json.dumps(
             [s.model_dump() for s in sentences], ensure_ascii=False
         )
-        payload_json = json.dumps(payload_obj.model_dump(), ensure_ascii=False)
+        payload_json = json.dumps(payload_obj.model_dump(by_alias=True), ensure_ascii=False)
 
         result: Dict[str, Optional[str]] = {
             "word": safe_word,
@@ -461,6 +552,9 @@ class LLMTransformation(Transformation):
             result[f"sentence_{idx}"] = (
                 sentence.target_language_highlighted.strip() or None
             )
+            result[f"sentence_{idx}_tts_clean"] = self._resolve_tts_clean_sentence(
+                sentence
+            )
             result[f"sentence_{idx}_cloze"] = (
                 sentence.target_language_cloze.strip() or None
             )
@@ -473,6 +567,100 @@ class LLMTransformation(Transformation):
             )
 
         return result
+
+    def _payload_to_result_sp_russian(
+        self, safe_word: str, payload_obj: SPRussianWordPayload
+    ) -> Dict[str, Optional[str]]:
+        normalized_word = (payload_obj.word or "").strip() or safe_word
+        word_with_stress = (payload_obj.word_with_stress or "").strip() or None
+        romanization = (payload_obj.romanization or "").strip() or None
+        part_of_speech = (payload_obj.part_of_speech or "").strip() or None
+        aspect_pair = (payload_obj.aspect_pair or "").strip() or None
+        morphological_breakdown = (
+            (payload_obj.morphological_breakdown or "").strip() or None
+        )
+        register = (payload_obj.register_label or "").strip() or None
+        grammar_formula = (payload_obj.grammar_formula or "").strip() or None
+        detailed_en = (payload_obj.detailed_explanation_english or "").strip() or None
+        detailed_es = (payload_obj.detailed_explanation_spanish or "").strip() or None
+        mnemonic_hook_spanish = (payload_obj.mnemonic_hook_spanish or "").strip() or None
+        piter_summer_variant = (payload_obj.piter_summer_variant or "").strip() or None
+        edge_case_notes = (payload_obj.edge_case_notes or "").strip() or None
+
+        synonyms = self._as_clean_list(payload_obj.synonyms)
+        antonyms = self._as_clean_list(payload_obj.antonyms)
+        collocations = self._as_clean_list(payload_obj.collocations)
+        sentences = payload_obj.sentences or []
+
+        sentences_json = json.dumps([s.model_dump() for s in sentences], ensure_ascii=False)
+        payload_json = json.dumps(payload_obj.model_dump(by_alias=True), ensure_ascii=False)
+
+        result: Dict[str, Optional[str]] = {
+            "word": safe_word,
+            "word_model": normalized_word,
+            "profile_id": self.profile.profile_id,
+            "profile_version": self.profile.prompt_version,
+            "word_with_stress": word_with_stress,
+            "romanization": romanization,
+            # Russian profile should not emit Chinese-specific helper columns.
+            "pinyin": None,
+            "part_of_speech": part_of_speech,
+            "character_breakdown": morphological_breakdown,
+            "aspect_pair": aspect_pair,
+            "register": register,
+            "grammar_formula": grammar_formula,
+            "detailed_explanation_english": detailed_en,
+            "detailed_explanation_spanish": detailed_es,
+            "meaning_english": detailed_en,
+            "meaning_spanish": detailed_es,
+            "mnemonic_hook_spanish": mnemonic_hook_spanish,
+            "piter_summer_variant": piter_summer_variant,
+            "edge_case_notes": edge_case_notes,
+            "synonyms_json": json.dumps(synonyms, ensure_ascii=False),
+            "antonyms_json": json.dumps(antonyms, ensure_ascii=False),
+            "collocations_json": json.dumps(collocations, ensure_ascii=False),
+            "sentences_json": sentences_json,
+            "synonyms_rendered": " | ".join(synonyms) if synonyms else None,
+            "antonyms_rendered": " | ".join(antonyms) if antonyms else None,
+            "collocations_rendered": " | ".join(collocations) if collocations else None,
+            "sentences_rendered_html": self._build_sentences_rendered_html(sentences),
+            "translation": None,
+            "example_sentences": sentences_json,
+            "improved_meaning": payload_json,
+        }
+
+        for idx, sentence in enumerate(sentences, start=1):
+            result[f"sentence_{idx}"] = (
+                sentence.target_language_highlighted.strip() or None
+            )
+            result[f"sentence_{idx}_tts_clean"] = (
+                sentence.tts_clean_sentence.strip() or None
+            )
+            result[f"sentence_{idx}_cloze"] = (
+                sentence.target_language_cloze.strip() or None
+            )
+            result[f"sentence_{idx}_romanization"] = (
+                sentence.sentence_romanization.strip() or None
+            )
+            result[f"sentence_{idx}_translation_english"] = (
+                sentence.translation_english.strip() or None
+            )
+            result[f"sentence_{idx}_translation_spanish"] = (
+                sentence.translation_spanish.strip() or None
+            )
+
+        return result
+
+    def _payload_to_result(
+        self,
+        safe_word: str,
+        payload_obj: BaseModel,
+    ) -> Dict[str, Optional[str]]:
+        if isinstance(payload_obj, SPRussianWordPayload):
+            return self._payload_to_result_sp_russian(safe_word, payload_obj)
+        return self._payload_to_result_lotm(
+            safe_word, LLMWordPayload.model_validate(payload_obj)
+        )
 
     def _cache_record_from_result(
         self,
@@ -489,6 +677,13 @@ class LLMTransformation(Transformation):
             "character_breakdown": result.get("character_breakdown"),
             "detailed_explanation_english": result.get("detailed_explanation_english"),
             "detailed_explanation_spanish": result.get("detailed_explanation_spanish"),
+            "word_with_stress": result.get("word_with_stress"),
+            "romanization": result.get("romanization"),
+            "aspect_pair": result.get("aspect_pair"),
+            "register": result.get("register"),
+            "grammar_formula": result.get("grammar_formula"),
+            "mnemonic_hook_spanish": result.get("mnemonic_hook_spanish"),
+            "piter_summer_variant": result.get("piter_summer_variant"),
             "edge_case_notes": result.get("edge_case_notes"),
             "synonyms_json": result.get("synonyms_json"),
             "antonyms_json": result.get("antonyms_json"),
@@ -514,8 +709,9 @@ class LLMTransformation(Transformation):
     ) -> Optional[Dict[str, Optional[str]]]:
         payload_json = existing_record.get("improved_meaning")
         if isinstance(payload_json, str) and payload_json.strip().startswith("{"):
+            response_model = self._get_response_model_for_profile()
             try:
-                payload = LLMWordPayload.model_validate(json.loads(payload_json))
+                payload = response_model.model_validate(json.loads(payload_json))
                 result = self._payload_to_result(safe_word, payload)
                 result["word"] = safe_word
                 return result
@@ -571,16 +767,18 @@ class LLMTransformation(Transformation):
             logger.error(f"Error checking LLM cache for word '{safe_word}': {exc}")
 
         try:
+            response_model = self._get_response_model_for_profile()
+
             @retry(
                 stop=stop_after_attempt(self.max_retries),
                 wait=wait_exponential(multiplier=1, min=2, max=10),
                 reraise=True,
             )
-            def get_payload() -> LLMWordPayload:
+            def get_payload() -> BaseModel:
                 result = self._generate_structured_output(
-                    self._build_profile_prompt(safe_word), LLMWordPayload
+                    self._build_profile_prompt(safe_word), response_model
                 )
-                return LLMWordPayload.model_validate(result)
+                return response_model.model_validate(result)
 
             payload_obj = get_payload()
             result = self._payload_to_result(safe_word, payload_obj)
@@ -632,6 +830,14 @@ class LLMTransformation(Transformation):
             how="left",
             suffixes=("", "_llm"),
         )
+        if self.profile.response_schema == SP_RUSSIAN_SCHEMA_ID:
+            # Keep Russian output focused: no pinyin/translation columns.
+            for col in ("pinyin", "translation"):
+                if col in df.columns:
+                    df[col] = None
+            for col in ("pinyin_llm", "translation_llm"):
+                if col in df.columns:
+                    df = df.drop(columns=[col])
         df = df.drop_duplicates(subset=["word"]).reset_index(drop=True)
         logger.info("LLM transformation applied successfully.")
         return df

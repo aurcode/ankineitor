@@ -1,9 +1,13 @@
 """Profile registry for LLM vocabulary generation prompts."""
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 DEFAULT_LLM_PROFILE_ID = "lotm_zh_en_es"
+SP_RUSSIAN_PROFILE_ID = "sp_russian"
+
+LOTM_SCHEMA_ID = "lotm_v1"
+SP_RUSSIAN_SCHEMA_ID = "sp_russian_v1"
 
 
 @dataclass(frozen=True)
@@ -13,10 +17,15 @@ class LLMProfile:
     profile_id: str
     display_name: str
     description: str
+    source_language: str
     sentence_language: str
     secondary_target_language: Optional[str]
+    supports_images: bool
     prompt_template: str
     prompt_version: str
+    response_schema: str
+    default_tts_voice_id: Optional[str] = None
+    tts_voice_pool: Tuple[str, ...] = ()
 
     def render_prompt(self, word: str) -> str:
         """Render the profile prompt by replacing supported placeholders."""
@@ -47,6 +56,7 @@ Return a strictly valid JSON object matching this exact structure, with no markd
   "sentences": [
     {
       "target_language_highlighted": "Example sentence in {sentence_language} with the target word wrapped in HTML bold tags (e.g., '... <b>{word}</b> ...').",
+      "tts_clean_sentence": "The exact target language sentence with NO HTML tags and NO markdown. Keep natural Simplified Chinese text only so it can be used for TTS audio generation.",
       "target_language_cloze": "The exact same sentence, but the target word is replaced by '___' for fill-in-the-blank testing.",
       "sentence_pinyin": "Full pinyin with tone marks for the entire sentence.",
       "translation_english": "Natural English translation.",
@@ -61,7 +71,53 @@ Strict Constraints & Logic Rules:
 3. Contextual Difficulty (HSK 5): While the theme is dark fantasy, the grammatical structures and non-target vocabulary should generally align with the HSK 5 level to remain comprehensible.
 4. Dynamic Sizing: YOU determine the length of the 'sentences', 'synonyms', 'antonyms', and 'collocations' arrays. Generate as many or as few as necessary based on the word's utility, polysemy, and complexity.
 5. No Numbering or Labels: Do NOT number the sentences or the meanings. Never write prefixes like "Sentence 1:", "Meaning 1:", "1.", or "2.". Just output the raw bulleted text or the raw sentence directly.
-6. Proper Nouns: If the word is a specific character name or location from the novel, identify it as a "Proper Noun", explain it thoroughly, and you may leave the arrays empty []."""
+6. Proper Nouns: If the word is a specific character name or location from the novel, identify it as a "Proper Noun", explain it thoroughly, and you may leave the arrays empty [].
+7. TTS Field Required: Every sentence object MUST include `tts_clean_sentence`, which must exactly match the sentence content but without HTML tags."""
+
+
+SP_RUSSIAN_PROMPT = """You are an expert language teacher creating advanced Anki flashcard data for a student learning Russian, specifically tailored for socializing, nightlife, clubbing, and partying with friends during the summer in St. Petersburg.
+
+Analyze the target Russian word '{word}'.
+
+Return a strictly valid JSON object matching this exact structure, with no markdown formatting or extra text outside the JSON:
+
+{
+  "word": "{word}",
+  "word_with_stress": "The target word with the acute accent mark for stress (e.g., тусо́вка). MANDATORY for all Russian words.",
+  "romanization": "Provide the Latin alphabet transliteration of the word, including the stress mark.",
+  "part_of_speech": "Noun (include Gender), Verb (include Aspect), Adjective, Adverb, Particle, Preposition, etc.",
+  "aspect_pair": "If the word is a verb, provide its Perfective/Imperfective counterpart. If not a verb, leave empty \"\".",
+  "morphological_breakdown": "Break down the word into prefix, root, suffix, and ending to help the learner understand its core meaning.",
+  "register": "Categorize the word strictly as: 'Standard', 'Informal Slang', 'Rude', or 'Vulgar/Mat'. Explain who it is safe to use this with.",
+  "grammar_formula": "If the word dictates a specific grammatical case (e.g., verb + Accusative, or preposition + Dative), write the formula here. Otherwise, leave empty \"\".",
+  "detailed_explanation_english": "Provide a highly comprehensive, extended explanation. Cover all edge cases thoroughly. If the word has multiple meanings, list ALL of them using bullet points formatted with escaped newlines (e.g., '\\n- [First meaning...] \\n- [Second meaning...]'). Include deep usage nuances or slang context.",
+  "detailed_explanation_spanish": "Provide the same comprehensive, extended explanation in Spanish, keeping the exact same bullet point formatting.",
+  "mnemonic_hook_spanish": "Create a short, memorable, and slightly absurd mental hook linking the pronunciation of the Russian word strictly to Spanish words or phrases.",
+  "piter_summer_variant": "Explain how this concept adapts specifically to summer nightlife in St. Petersburg (e.g., White Nights, boat parties, terrace bars). If a St. Petersburg regional slang equivalent exists, provide it here.",
+  "synonyms": ["List Russian synonyms with stress marks. You determine the optimal number. Leave empty [] if none apply."],
+  "antonyms": ["List Russian antonyms with stress marks. You determine the optimal number. Leave empty [] if none apply."],
+  "collocations": ["List common, natural word pairings or short phrases (with stress marks), especially those used in party settings. E.g., which verbs pair with this drink?"],
+  "edge_case_notes": "Provide a longer explanation managing any edge cases. Explain grammatical quirks, slang derivations, or shifting stress in different cases.",
+  "sentences": [
+    {
+      "target_language_highlighted": "Example sentence in Russian with the target word wrapped in HTML bold tags (e.g., '... <b>{word}</b> ...'). INCLUDE STRESS MARKS on all words of multiple syllables.",
+      "tts_clean_sentence": "The exact target language sentence with NO HTML tags, NO stress marks, and NO markdown. Just the raw, natural Cyrillic text for Text-to-Speech audio generation.",
+      "target_language_cloze": "The exact same sentence, but the target word is replaced by '___' for fill-in-the-blank testing.",
+      "sentence_romanization": "Full Latin transliteration of the example sentence, keeping the stress marks.",
+      "translation_english": "Natural English translation.",
+      "translation_spanish": "Natural Spanish translation."
+    }
+  ]
+}
+
+Strict Constraints & Logic Rules:
+1. Valid JSON: Ensure all strings are properly escaped. Do not use unescaped line breaks.
+2. Thematic Context (Piter Summer Nightlife): The example sentences MUST lean heavily into casual socializing, drinking, and partying specifically during the summer in St. Petersburg. Subject matter should involve things like terrace bars, the White Nights, getting a taxi after the bridges open, splitting the bill, or weekend plans in July.
+3. Contextual Difficulty & Tone (Casual / Slang): Grammatical structures should align with intermediate-to-advanced Russian (B1-B2 level), but the vocabulary and tone must reflect real-life, spoken Russian. Use appropriate modern slang.
+4. Dynamic Sizing: YOU determine the length of the 'sentences', 'synonyms', 'antonyms', and 'collocations' arrays. Generate as many or as few as necessary based on the word's utility.
+5. No Numbering or Labels: Do NOT number the sentences or the meanings. Never write prefixes like "Sentence 1:" or "1.". Just output the raw bulleted text or the raw sentence directly.
+6. Proper Nouns: If the word is a specific place, identify it as a "Proper Noun", explain it thoroughly, and you may leave the arrays empty [].
+7. Russian Stress Marks: You must include acute accents (´) on the stressed vowel of every Russian word that has more than one syllable, across all Cyrillic and Romanized fields (except tts_clean_sentence)."""
 
 
 LLM_PROFILES: Dict[str, LLMProfile] = {
@@ -72,10 +128,30 @@ LLM_PROFILES: Dict[str, LLMProfile] = {
             "Chinese vocabulary profile for Lord of the Mysteries with detailed "
             "EN/ES explanations and thematic example sentences."
         ),
+        source_language="Chinese (Simplified)",
         sentence_language="Simplified Chinese",
         secondary_target_language="Spanish",
+        supports_images=True,
         prompt_template=LOTM_ZH_EN_ES_PROMPT,
         prompt_version="2026-02-21-v1",
+        response_schema=LOTM_SCHEMA_ID,
+        default_tts_voice_id="Chinese (Mandarin)_Mature_Woman",
+    ),
+    SP_RUSSIAN_PROFILE_ID: LLMProfile(
+        profile_id=SP_RUSSIAN_PROFILE_ID,
+        display_name="SP Russian",
+        description=(
+            "Russian nightlife/social vocabulary for Saint Petersburg summers "
+            "with EN/ES explanations, stress marks, spoken usage, and Victorian-style imagery."
+        ),
+        source_language="Russian",
+        sentence_language="Russian",
+        secondary_target_language="Spanish",
+        supports_images=True,
+        prompt_template=SP_RUSSIAN_PROMPT,
+        prompt_version="2026-02-21-v1",
+        response_schema=SP_RUSSIAN_SCHEMA_ID,
+        default_tts_voice_id="Russian_HandsomeChildhoodFriend",
     ),
 }
 

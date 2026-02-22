@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from ankineitor.pipeline.llm_audio_transformation import LLMAudioTransformation
 from ankineitor.pipeline.audio_creator import AudioCreator
+from ankineitor.pipeline.llm_profiles import SP_RUSSIAN_PROFILE_ID
 
 
 class TestLLMAudioTransformation:
@@ -180,6 +181,61 @@ class TestLLMAudioTransformation:
             assert "sentence_1_audio" not in result_df.columns
             assert mock_create_audio.call_count == 2
 
+    def test_apply_prefers_tts_clean_sentence_when_available(self, llm_audio_transform):
+        """Test that sentence_N_tts_clean is used for audio input when present."""
+        df = pd.DataFrame(
+            {
+                "word": ["набережная"],
+                "sentence_1": ["<b>набережно́й</b> bad for tts"],
+                "sentence_1_tts_clean": ["на набережной после клуба"],
+            }
+        )
+
+        with patch.object(llm_audio_transform.audio_creator, "_create_audio") as mock_create_audio:
+            mock_create_audio.return_value = "/fake/audio/path.mp3"
+            _ = llm_audio_transform.apply(df)
+            mock_create_audio.assert_called_once()
+            assert mock_create_audio.call_args[0][0] == "на набережной после клуба"
+
+    def test_apply_supports_tts_clean_only_columns(self, llm_audio_transform):
+        """Audio generation should work even if only sentence_N_tts_clean exists."""
+        df = pd.DataFrame(
+            {
+                "word": ["набережная"],
+                "sentence_1_tts_clean": ["встречаемся на набережной после клуба"],
+            }
+        )
+
+        with patch.object(llm_audio_transform.audio_creator, "_create_audio") as mock_create_audio:
+            mock_create_audio.return_value = "/fake/audio/path.mp3"
+            result_df = llm_audio_transform.apply(df)
+
+            assert "sentence_1_audio" in result_df.columns
+            assert result_df["sentence_1_audio"].iloc[0] == "/fake/audio/path.mp3"
+            mock_create_audio.assert_called_once()
+            assert mock_create_audio.call_args[0][0] == "встречаемся на набережной после клуба"
+
+    def test_apply_falls_back_to_sentence_when_tts_clean_is_empty(
+        self, llm_audio_transform
+    ):
+        """If sentence_N_tts_clean exists but is empty, use sentence_N text."""
+        df = pd.DataFrame(
+            {
+                "word": ["набережная"],
+                "sentence_1": ["в июле идем на набережную после клуба"],
+                "sentence_1_tts_clean": [""],
+            }
+        )
+
+        with patch.object(llm_audio_transform.audio_creator, "_create_audio") as mock_create_audio:
+            mock_create_audio.return_value = "/fake/audio/path.mp3"
+            result_df = llm_audio_transform.apply(df)
+
+            assert "sentence_1_audio" in result_df.columns
+            assert result_df["sentence_1_audio"].iloc[0] == "/fake/audio/path.mp3"
+            mock_create_audio.assert_called_once()
+            assert mock_create_audio.call_args[0][0] == "в июле идем на набережную после клуба"
+
     def test_apply_resolves_audio_language_from_source(self, llm_audio_transform):
         """Test sentence audio uses source-language-specific gTTS code."""
         llm_audio_transform.source_language = "Spanish"
@@ -207,3 +263,65 @@ class TestLLMAudioTransformation:
                 assert mock_create_audio.call_count == 3
                 for call in mock_create_audio.call_args_list:
                     assert call.kwargs.get("language") == "es"
+
+    def test_apply_uses_profile_default_voice_for_sp_russian(self, llm_audio_transform):
+        """SP Russian profile should force its configured default MiniMax voice."""
+        llm_audio_transform.profile_id = SP_RUSSIAN_PROFILE_ID
+        llm_audio_transform.source_language = "Russian"
+        llm_audio_transform.audio_creator.minimax_voice_id = "male-qn-qingse"
+        previous_voice = llm_audio_transform.audio_creator.minimax_voice_id
+
+        df = pd.DataFrame(
+            {
+                "word": ["набережная"],
+                "sentence_1": ["В июле встречаемся на набережной."],
+            }
+        )
+        seen_voices = []
+
+        def _capture_voice(*args, **kwargs):
+            del args, kwargs
+            seen_voices.append(llm_audio_transform.audio_creator.minimax_voice_id)
+            return "/fake/audio/path.mp3"
+
+        with patch.object(
+            llm_audio_transform.audio_creator, "_create_audio", side_effect=_capture_voice
+        ) as mock_create_audio:
+            result_df = llm_audio_transform.apply(df)
+
+        assert "sentence_1_audio" in result_df.columns
+        assert mock_create_audio.call_count == 1
+        assert seen_voices == ["Russian_HandsomeChildhoodFriend"]
+        assert llm_audio_transform.audio_creator.minimax_voice_id == previous_voice
+
+    def test_apply_uses_profile_default_voice_for_lotm(self, llm_audio_transform):
+        """LOTM profile should force its configured default MiniMax voice."""
+        llm_audio_transform.profile_id = "lotm_zh_en_es"
+        llm_audio_transform.source_language = "Chinese (Simplified)"
+        llm_audio_transform.audio_creator.minimax_voice_id = "male-qn-qingse"
+        previous_voice = llm_audio_transform.audio_creator.minimax_voice_id
+
+        df = pd.DataFrame(
+            {
+                "word": ["隐秘"],
+                "sentence_1": ["他在深夜听见了低语。"],
+            }
+        )
+        seen_voices = []
+
+        def _capture_voice(*args, **kwargs):
+            del args, kwargs
+            seen_voices.append(llm_audio_transform.audio_creator.minimax_voice_id)
+            return "/fake/audio/path.mp3"
+
+        with patch.object(
+            llm_audio_transform.audio_creator,
+            "_create_audio",
+            side_effect=_capture_voice,
+        ) as mock_create_audio:
+            result_df = llm_audio_transform.apply(df)
+
+        assert "sentence_1_audio" in result_df.columns
+        assert mock_create_audio.call_count == 1
+        assert seen_voices == ["Chinese (Mandarin)_Mature_Woman"]
+        assert llm_audio_transform.audio_creator.minimax_voice_id == previous_voice

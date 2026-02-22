@@ -39,8 +39,8 @@ class TestSettingsValidation:
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None)
             assert settings.pipeline_db_path == "data/ankineitor_pipeline.db"
-            assert settings.llm_model == "gemini-3-flash-preview"
-            assert settings.llm_image_prompt_model == "gemini-3-flash-preview"
+            assert settings.llm_model == "gemini-3.1-pro-preview"
+            assert settings.llm_image_prompt_model == "gemini-3.1-pro-preview"
             assert settings.llm_image_master_prompt_template is None
             assert "与" in settings.llm_image_do_not_generate_terms
             assert settings.llm_image_model == "gemini-3-pro-image-preview"

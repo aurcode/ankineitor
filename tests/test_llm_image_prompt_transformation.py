@@ -26,9 +26,10 @@ class TestLLMImagePromptTransformationInit:
                 LLMImagePromptTransformation, "_build_genai_client", return_value=Mock()
             ):
                 transformation = LLMImagePromptTransformation(db_client=mock_db_client)
-                assert transformation.model_name == "gemini-3-flash-preview"
+                assert transformation.model_name == "gemini-3.1-pro-preview"
                 assert transformation.column_name == "master_image_prompt"
                 assert "与" in transformation.blocked_terms
+                assert transformation.source_language == "Chinese (Simplified)"
 
     def test_missing_credentials_raises_validation_error(self, mock_settings):
         mock_db_client = Mock()
@@ -121,6 +122,22 @@ class TestLLMImagePromptTransformationProcess:
         assert master_prompt == MASTER_IMAGE_PROMPT_TEMPLATE.format(
             visual_description="test scene"
         )
+
+    def test_build_visual_prompt_adds_russian_victorian_hint(self, mock_settings):
+        transformation, _ = self._build_transformation(mock_settings)
+        transformation.source_language = "Russian"
+
+        prompt = transformation._build_visual_prompt("набережная")
+
+        assert "Saint Petersburg canals" in prompt
+        assert "Victorian gaslamp aesthetic" in prompt
+
+    def test_cache_key_changes_by_source_language(self, mock_settings):
+        transformation, _ = self._build_transformation(mock_settings)
+        key_zh = transformation._build_cache_key_word("мост")
+        transformation.source_language = "Russian"
+        key_ru = transformation._build_cache_key_word("мост")
+        assert key_ru != key_zh
 
 
 class TestLLMImagePromptTransformationApply:

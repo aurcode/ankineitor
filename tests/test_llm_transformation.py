@@ -12,6 +12,8 @@ from ankineitor.pipeline.llm_profiles import get_llm_profile
 from ankineitor.pipeline.llm_transformation import (
     LLMTransformation,
     LLMWordPayload,
+    SPRussianSentencePayload,
+    SPRussianWordPayload,
     SentencePayload,
 )
 from ankineitor.security.exceptions import ValidationError
@@ -150,6 +152,22 @@ class TestLLMTransformationProcess:
                 assert "Analyze the target word '隐秘'" in prompt
                 assert "Lord of the Mysteries" in prompt
 
+    def test_build_sp_russian_prompt_includes_word(self, mock_settings):
+        mock_db_client = Mock()
+        mock_settings.llm_profile_id = "sp_russian"
+
+        with patch(
+            "ankineitor.pipeline.llm_transformation.get_settings",
+            return_value=mock_settings,
+        ):
+            with patch.object(
+                LLMTransformation, "_build_genai_client", return_value=Mock()
+            ):
+                transformation = LLMTransformation(db_client=mock_db_client)
+                prompt = transformation._build_profile_prompt("набережная")
+                assert "Analyze the target Russian word 'набережная'" in prompt
+                assert "Piter Summer Nightlife" in prompt
+
     def test_process_word_empty_returns_none(self, mock_settings):
         mock_db_client = Mock()
 
@@ -209,6 +227,7 @@ class TestLLMTransformationProcess:
                     assert result is not None
                     assert result["meaning_english"] == "hidden, secret, covert"
                     assert result["sentence_1"] == "他加入了<b>隐秘</b>组织。"
+                    assert result["sentence_1_tts_clean"] == "他加入了隐秘组织。"
                     mock_generate.assert_not_called()
 
     def test_cache_miss_generates_dynamic_sentences_and_saves(self, mock_settings):
@@ -238,6 +257,7 @@ class TestLLMTransformationProcess:
                     sentences=[
                         SentencePayload(
                             target_language_highlighted="在血月下，他听见<b>隐秘</b>仪式的低语。",
+                            tts_clean_sentence="在血月下，他听见隐秘仪式的低语。",
                             target_language_cloze="在血月下，他听见___仪式的低语。",
                             sentence_pinyin="zài xuè yuè xià, tā tīng jiàn yǐn mì yí shì de dī yǔ",
                             translation_english="Under the crimson moon, he heard whispers of a secret ritual.",
@@ -277,10 +297,70 @@ class TestLLMTransformationProcess:
                     assert result["word"] == "隐秘"
                     assert result["meaning_english"] == "hidden, secret, covert"
                     assert result["sentence_1"] is not None
+                    assert result["sentence_1_tts_clean"] == "在血月下，他听见隐秘仪式的低语。"
                     assert result["sentence_4"] is not None
+                    assert result["sentence_4_tts_clean"] == "组织用暗号传递隐秘命令。"
                     assert result["sentence_4_translation_english"] is not None
                     assert result["sentences_json"]
                     mock_db_client.insert_record.assert_called_once()
+
+    def test_sp_russian_payload_maps_tts_clean_sentences(self, mock_settings):
+        mock_db_client = Mock()
+        mock_db_client.find_record.return_value = None
+        mock_settings.llm_profile_id = "sp_russian"
+
+        with patch(
+            "ankineitor.pipeline.llm_transformation.get_settings",
+            return_value=mock_settings,
+        ):
+            with patch.object(
+                LLMTransformation, "_build_genai_client", return_value=Mock()
+            ):
+                transformation = LLMTransformation(db_client=mock_db_client)
+
+                payload = SPRussianWordPayload(
+                    word="набережная",
+                    word_with_stress="набережна́я",
+                    romanization="naberezhnáya",
+                    part_of_speech="Noun (Feminine)",
+                    aspect_pair="",
+                    morphological_breakdown="на- + берег + -н- + -ая",
+                    register="Standard",
+                    grammar_formula="",
+                    detailed_explanation_english="riverside embankment",
+                    detailed_explanation_spanish="malecón / paseo junto al río",
+                    mnemonic_hook_spanish="Nave beresina en la bahía.",
+                    piter_summer_variant="Meeting point during White Nights.",
+                    synonyms=["проме́над"],
+                    antonyms=[],
+                    collocations=["гуля́ть по набережно́й"],
+                    edge_case_notes="Common in urban social planning.",
+                    sentences=[
+                        SPRussianSentencePayload(
+                            target_language_highlighted="В ию́ле мы встре́тились на <b>набережно́й</b> пе́ред клу́бом.",
+                            tts_clean_sentence="В июле мы встретились на набережной перед клубом.",
+                            target_language_cloze="В ию́ле мы встре́тились на ___ пе́ред клу́бом.",
+                            sentence_romanization="V iyúle my vstrétilis' na naberezhnóy pered klúbom.",
+                            translation_english="In July we met on the embankment before the club.",
+                            translation_spanish="En julio nos encontramos en la ribera antes del club.",
+                        )
+                    ],
+                )
+
+                with patch.object(
+                    transformation,
+                    "_generate_structured_output",
+                    return_value=payload,
+                ):
+                    result = transformation.process_word("набережная")
+                    assert result is not None
+                    assert result["word_with_stress"] == "набережна́я"
+                    assert result["pinyin"] is None
+                    assert result["translation"] is None
+                    assert result["sentence_1_tts_clean"] == (
+                        "В июле мы встретились на набережной перед клубом."
+                    )
+                    assert result["sentence_1_romanization"] is not None
 
     def test_process_word_handles_generation_error(self, mock_settings):
         mock_db_client = Mock()
