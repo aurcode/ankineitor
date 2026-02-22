@@ -1,4 +1,11 @@
-export type RunStatus = "queued" | "running" | "retrying" | "success" | "error";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "retrying"
+  | "paused"
+  | "canceled"
+  | "success"
+  | "error";
 export type BackgroundJobStatus = "queued" | "running" | "success" | "error" | "canceled";
 export type BackgroundJobType = "anki_deck" | "word_extractor";
 
@@ -56,6 +63,10 @@ export interface RunSummary {
   event_count: number;
 }
 
+export interface RunListResponse {
+  runs: RunSummary[];
+}
+
 export interface ResultRow {
   row_index: number;
   word: string;
@@ -86,6 +97,7 @@ export interface AddCategoryResponse {
 export type PipelineEventType =
   | "pipeline_start"
   | "cache_checked"
+  | "transform_queue"
   | "transform_start"
   | "transform_complete"
   | "pipeline_complete"
@@ -98,6 +110,13 @@ export interface PipelineEventPayload {
   stage?: string;
   transform_name?: string;
   transform_key?: string;
+  current_word?: string;
+  words_left?: number;
+  running_words?: string[];
+  queued_words?: string[];
+  running_count?: number;
+  queued_count?: number;
+  execution_mode?: string;
   progress_ratio?: number;
   status_text?: string;
   error?: string;
@@ -165,6 +184,84 @@ export interface BackgroundJobEventsResponse {
 
 export interface BackgroundJobListResponse {
   jobs: BackgroundJobSummary[];
+}
+
+export interface AdminPipelineRunSnapshot {
+  id: string;
+  owner_username: string;
+  status: RunStatus;
+  profile_id: string;
+  source_language: string;
+  total_input_words: number;
+  celery_task_id: string;
+  current_transform: string;
+  current_word: string;
+  words_left: number;
+  running_count: number;
+  queued_count: number;
+  last_event_type: string;
+  last_event_sequence: number;
+  last_event_at: string | null;
+  created_at: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+}
+
+export interface AdminBackgroundJobSnapshot {
+  id: string;
+  owner_username: string;
+  job_type: BackgroundJobType;
+  status: BackgroundJobStatus;
+  progress_ratio: number;
+  status_text: string;
+  celery_task_id: string;
+  created_at: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CeleryTaskSnapshot {
+  id: string;
+  name: string;
+  args: string;
+  kwargs: string;
+  eta: string | null | "";
+}
+
+export interface CeleryWorkerSnapshot {
+  worker_name: string;
+  queues: string[];
+  max_concurrency: number;
+  active_count: number;
+  reserved_count: number;
+  scheduled_count: number;
+  active_tasks: CeleryTaskSnapshot[];
+  reserved_tasks: CeleryTaskSnapshot[];
+  scheduled_tasks: CeleryTaskSnapshot[];
+}
+
+export interface AdminQueueMonitorResponse {
+  generated_at: string;
+  summary: {
+    active_pipeline_runs: number;
+    active_background_jobs: number;
+    celery_workers: number;
+    celery_active_tasks: number;
+    celery_reserved_tasks: number;
+    celery_scheduled_tasks: number;
+  };
+  pipeline_runs: AdminPipelineRunSnapshot[];
+  background_jobs: AdminBackgroundJobSnapshot[];
+  celery: {
+    workers: CeleryWorkerSnapshot[];
+    totals: {
+      workers: number;
+      active_tasks: number;
+      reserved_tasks: number;
+      scheduled_tasks: number;
+    };
+    error: string;
+  };
 }
 
 export type JobWebsocketMessage =
@@ -268,7 +365,16 @@ export interface FlashcardBackView {
     collocations: string[];
   };
   sentences: FlashcardSentenceView[];
-  image: Record<string, string>;
+  image: {
+    picture: string;
+    picture_url?: string;
+    image_term_type: string;
+    visual_description: string;
+    master_image_prompt: string;
+    image_generation_skip_reason: string;
+    image_render_status: string;
+    image_render_skip_reason: string;
+  };
 }
 
 export interface FlashcardCardResponse {
@@ -277,6 +383,13 @@ export interface FlashcardCardResponse {
   front: FlashcardFrontView;
   back: FlashcardBackView;
   raw_row: Record<string, string | number | boolean | null>;
+}
+
+export interface FlashcardCardMutationResponse {
+  dataset: FlashcardDatasetSummary;
+  card: FlashcardCardResponse;
+  rerun_mode?: "full" | "image";
+  applied_transforms?: string[];
 }
 
 export interface WordExtractorSummary {

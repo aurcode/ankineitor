@@ -1,6 +1,7 @@
 """Unit tests for application-level pipeline orchestration service."""
 
 from typing import Any, Dict
+import time
 
 import pandas as pd
 import pytest
@@ -72,6 +73,90 @@ class _SourceAwareDummyTransform(Transformation):
         return output
 
 
+class _DummyTimestampTransform(Transformation):
+    @property
+    def column_name(self) -> str:
+        return "timestamp"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        output = df.copy()
+        output["timestamp"] = "2026-02-22"
+        return output
+
+
+class _DummyAudioTransform(Transformation):
+    @property
+    def column_name(self) -> str:
+        return "audio"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        output = df.copy()
+        output["audio"] = output["word"].astype(str).map(lambda word: f"A:{word}")
+        return output
+
+
+class _DummyLlmMeaningTransform(Transformation):
+    pipeline_stage = "llm"
+
+    @property
+    def column_name(self) -> str:
+        return "sentence_1"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        output = df.copy()
+        output["sentence_1"] = output["word"].astype(str).map(lambda word: f"S:{word}")
+        return output
+
+
+class _DummyLlmAudioTransform(Transformation):
+    pipeline_stage = "llm"
+    required_input_columns = ("sentence_1",)
+
+    @property
+    def column_name(self) -> str:
+        return "sentence_1_audio"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        output = df.copy()
+        output["sentence_1_audio"] = output["sentence_1"].astype(str).map(
+            lambda sentence: f"A:{sentence}"
+        )
+        return output
+
+
+class _DummyImagePromptTransform(Transformation):
+    pipeline_stage = "llm"
+
+    @property
+    def column_name(self) -> str:
+        return "master_image_prompt"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        output = df.copy()
+        output["master_image_prompt"] = output["word"].astype(str).map(
+            lambda word: f"P:{word}"
+        )
+        return output
+
+
+class _DummyImageRendererTransform(Transformation):
+    pipeline_stage = "llm"
+    required_input_columns = ("master_image_prompt",)
+
+    @property
+    def column_name(self) -> str:
+        return "image"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        # Keep this transform slow to validate pipeline overlap between words.
+        time.sleep(0.05)
+        output = df.copy()
+        output["image"] = output["master_image_prompt"].astype(str).map(
+            lambda prompt: f"I:{prompt}"
+        )
+        return output
+
+
 def _build_test_profile(*, supports_images: bool) -> LLMProfile:
     return LLMProfile(
         profile_id="test_profile",
@@ -100,6 +185,30 @@ def test_build_ordered_transform_names_deduplicates_and_preserves_order():
     assert ordered == ["B", "A", "C"]
 
 
+def test_build_ordered_transform_names_moves_image_prompt_before_renderer():
+    service = PipelineRunService()
+    image_prompt = object.__new__(LLMImagePromptTransformation)
+    image_renderer = object.__new__(LLMImageTransformation)
+    all_transformations = {
+        "LLM Image Renderer (Master Prompt)": image_renderer,
+        "LLM Image Prompt (Visual Translator)": image_prompt,
+    }
+
+    ordered = service.build_ordered_transform_names(
+        all_transformations=all_transformations,
+        always_included_transform_names=[],
+        selected_transform_names=[
+            "LLM Image Renderer (Master Prompt)",
+            "LLM Image Prompt (Visual Translator)",
+        ],
+    )
+
+    assert ordered == [
+        "LLM Image Prompt (Visual Translator)",
+        "LLM Image Renderer (Master Prompt)",
+    ]
+
+
 def test_prepare_pipeline_run_raises_when_runtime_factory_misses_transform():
     service = PipelineRunService()
     db_client = _FakePipelineDBClient()
@@ -124,6 +233,7 @@ def test_execute_pipeline_run_persists_results_csv(tmp_path, monkeypatch):
     db_client = _FakePipelineDBClient()
     all_transforms = {"translate": _DummyTranslationTransform()}
     monkeypatch.setattr(result_store, "PIPELINE_RESULTS_ROOT", tmp_path / "results")
+    progress_events = []
 
     prepared = service.prepare_pipeline_run(
         pipeline_db_client=db_client,
@@ -137,12 +247,226 @@ def test_execute_pipeline_run_persists_results_csv(tmp_path, monkeypatch):
         prepared_run=prepared,
         words=["hola", "adios"],
         llm_profile_id="lotm_zh_en_es",
+        progress_callback=progress_events.append,
     )
 
     assert set(run_result.df_results["word"]) == {"hola", "adios"}
     assert "translation" in run_result.df_results.columns
     assert run_result.saved_results_csv.exists()
     assert run_result.saved_results_csv.parent == tmp_path / "results" / "lotm_zh_en_es"
+
+    transform_start = next(
+        event for event in progress_events if event.get("event") == "transform_start"
+    )
+    transform_complete = next(
+        event for event in progress_events if event.get("event") == "transform_complete"
+    )
+    assert transform_start["current_word"] == "hola"
+    assert transform_start["words_left"] == 1
+    assert transform_complete["current_word"] == "hola"
+    assert transform_complete["words_left"] == 0
+
+
+def test_execute_pipeline_run_parallel_word_branches_emits_running_and_queue_data(
+    tmp_path, monkeypatch
+):
+    service = PipelineRunService()
+    db_client = _FakePipelineDBClient()
+    all_transforms = {
+        "Audio": _DummyAudioTransform(),
+        "LLM (Meanings/Sentences)": _DummyLlmMeaningTransform(),
+        "LLM Image Prompt (Visual Translator)": _DummyImagePromptTransform(),
+        "LLM Audio (Sentences)": _DummyLlmAudioTransform(),
+        "LLM Image Renderer (Master Prompt)": _DummyImageRendererTransform(),
+    }
+    monkeypatch.setattr(result_store, "PIPELINE_RESULTS_ROOT", tmp_path / "results")
+    progress_events = []
+
+    prepared = service.prepare_pipeline_run(
+        pipeline_db_client=db_client,
+        all_transformations=all_transforms,
+        ordered_transform_names=[
+            "Audio",
+            "LLM (Meanings/Sentences)",
+            "LLM Image Prompt (Visual Translator)",
+            "LLM Audio (Sentences)",
+            "LLM Image Renderer (Master Prompt)",
+        ],
+        llm_profile_id="lotm_zh_en_es",
+        llm_source_language="Chinese (Simplified)",
+    )
+
+    run_result = service.execute_pipeline_run(
+        prepared_run=prepared,
+        words=["你好", "谢谢"],
+        llm_profile_id="lotm_zh_en_es",
+        progress_callback=progress_events.append,
+        execution_mode="parallel_word_branches",
+    )
+
+    assert set(run_result.df_results["word"]) == {"你好", "谢谢"}
+    assert "audio" in run_result.df_results.columns
+    assert "sentence_1" in run_result.df_results.columns
+    assert "sentence_1_audio" in run_result.df_results.columns
+    assert "master_image_prompt" in run_result.df_results.columns
+    assert "image" in run_result.df_results.columns
+
+    llm_queue = next(
+        event
+        for event in progress_events
+        if event.get("event") == "transform_queue"
+        and event.get("transform_name") == "_DummyLlmMeaningTransform"
+    )
+    assert llm_queue["queued_words"] == ["你好", "谢谢"]
+
+    llm_starts = [
+        event
+        for event in progress_events
+        if event.get("event") == "transform_start"
+        and event.get("transform_name") == "_DummyLlmMeaningTransform"
+    ]
+    assert len(llm_starts) == 2
+    assert llm_starts[0]["current_word"] == "你好"
+    assert llm_starts[0]["running_words"] == ["你好"]
+    assert llm_starts[0]["queued_words"] == ["谢谢"]
+    assert llm_starts[1]["current_word"] == "谢谢"
+
+    llm_audio_starts = [
+        event
+        for event in progress_events
+        if event.get("event") == "transform_start"
+        and event.get("transform_name") == "_DummyLlmAudioTransform"
+    ]
+    assert len(llm_audio_starts) == 2
+    assert llm_audio_starts[0]["current_word"] == "你好"
+    assert llm_audio_starts[1]["current_word"] == "谢谢"
+
+    llm_audio_queue = next(
+        event
+        for event in progress_events
+        if event.get("event") == "transform_queue"
+        and event.get("transform_name") == "_DummyLlmAudioTransform"
+    )
+    assert llm_audio_queue["queued_words"] == ["你好", "谢谢"]
+
+    llm_meaning_complete_index = next(
+        idx
+        for idx, event in enumerate(progress_events)
+        if event.get("event") == "transform_complete"
+        and event.get("transform_name") == "_DummyLlmMeaningTransform"
+        and event.get("current_word") == "你好"
+    )
+    llm_audio_start_index = next(
+        idx
+        for idx, event in enumerate(progress_events)
+        if event.get("event") == "transform_start"
+        and event.get("transform_name") == "_DummyLlmAudioTransform"
+        and event.get("current_word") == "你好"
+    )
+    assert llm_audio_start_index > llm_meaning_complete_index
+
+    image_prompt_complete_index = next(
+        idx
+        for idx, event in enumerate(progress_events)
+        if event.get("event") == "transform_complete"
+        and event.get("transform_name") == "_DummyImagePromptTransform"
+        and event.get("current_word") == "你好"
+    )
+    image_renderer_start_index = next(
+        idx
+        for idx, event in enumerate(progress_events)
+        if event.get("event") == "transform_start"
+        and event.get("transform_name") == "_DummyImageRendererTransform"
+        and event.get("current_word") == "你好"
+    )
+    assert image_renderer_start_index > image_prompt_complete_index
+
+    llm_meaning_second_start = next(
+        idx
+        for idx, event in enumerate(progress_events)
+        if event.get("event") == "transform_start"
+        and event.get("transform_name") == "_DummyLlmMeaningTransform"
+        and event.get("current_word") == "谢谢"
+    )
+    image_renderer_first_complete = next(
+        idx
+        for idx, event in enumerate(progress_events)
+        if event.get("event") == "transform_complete"
+        and event.get("transform_name") == "_DummyImageRendererTransform"
+        and event.get("current_word") == "你好"
+    )
+    assert llm_meaning_second_start < image_renderer_first_complete
+
+
+def test_execute_pipeline_run_parallel_word_branches_skips_cached_partial_word(
+    tmp_path, monkeypatch
+):
+    class _CountingAudioTransform(_DummyAudioTransform):
+        def __init__(self):
+            self.calls = []
+
+        def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+            self.calls.append(df["word"].astype(str).tolist())
+            return super().apply(df)
+
+    service = PipelineRunService()
+    db_client = _FakePipelineDBClient()
+    db_client.rows["你好"] = {"word": "你好", "audio": "cached://你好"}
+    audio_transform = _CountingAudioTransform()
+    all_transforms = {
+        "Audio": audio_transform,
+        "LLM (Meanings/Sentences)": _DummyLlmMeaningTransform(),
+    }
+    monkeypatch.setattr(result_store, "PIPELINE_RESULTS_ROOT", tmp_path / "results")
+    progress_events = []
+
+    prepared = service.prepare_pipeline_run(
+        pipeline_db_client=db_client,
+        all_transformations=all_transforms,
+        ordered_transform_names=[
+            "Audio",
+            "LLM (Meanings/Sentences)",
+        ],
+        llm_profile_id="lotm_zh_en_es",
+        llm_source_language="Chinese (Simplified)",
+    )
+
+    run_result = service.execute_pipeline_run(
+        prepared_run=prepared,
+        words=["你好", "谢谢"],
+        llm_profile_id="lotm_zh_en_es",
+        progress_callback=progress_events.append,
+        execution_mode="parallel_word_branches",
+    )
+
+    cache_checked_event = next(
+        event for event in progress_events if event.get("event") == "cache_checked"
+    )
+    assert cache_checked_event["cached_words"] == 1
+    assert cache_checked_event["new_words"] == 1
+    assert cache_checked_event["backfill_words"] == 1
+
+    audio_queue_event = next(
+        event
+        for event in progress_events
+        if event.get("event") == "transform_queue"
+        and event.get("transform_name") == "_CountingAudioTransform"
+    )
+    assert audio_queue_event["queued_words"] == ["谢谢"]
+
+    audio_starts = [
+        event
+        for event in progress_events
+        if event.get("event") == "transform_start"
+        and event.get("transform_name") == "_CountingAudioTransform"
+    ]
+    assert len(audio_starts) == 1
+    assert audio_starts[0]["current_word"] == "谢谢"
+    assert audio_transform.calls == [["谢谢"]]
+
+    result_rows = run_result.df_results.set_index("word")
+    assert result_rows.loc["你好", "audio"] == "cached://你好"
+    assert result_rows.loc["谢谢", "audio"] == "A:谢谢"
 
 
 def test_add_category_to_results_updates_dataframe_with_joined_categories():

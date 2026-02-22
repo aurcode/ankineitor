@@ -128,7 +128,117 @@ class TransformSelectionService:
         for name in always_included_transform_names + selected_transform_names:
             if name in all_transformations and name not in ordered_transform_names:
                 ordered_transform_names.append(name)
-        return ordered_transform_names
+        return TransformSelectionService._reorder_with_dependencies(
+            ordered_transform_names=ordered_transform_names,
+            all_transformations=all_transformations,
+        )
+
+    @staticmethod
+    def _required_input_columns(transform: object) -> tuple[str, ...]:
+        required_columns = getattr(transform, "required_input_columns", ())
+        if isinstance(required_columns, str):
+            return (required_columns,)
+        if isinstance(required_columns, tuple):
+            return tuple(str(column) for column in required_columns if str(column))
+        if isinstance(required_columns, list):
+            return tuple(str(column) for column in required_columns if str(column))
+        return ()
+
+    @staticmethod
+    def _resolve_transform_dependencies(
+        *,
+        ordered_transform_names: List[str],
+        all_transformations: Dict[str, object],
+    ) -> Dict[str, set[str]]:
+        dependencies: Dict[str, set[str]] = {
+            name: set() for name in ordered_transform_names
+        }
+        column_producers: Dict[str, List[str]] = {}
+
+        for name in ordered_transform_names:
+            transform = all_transformations.get(name)
+            produced_column = str(getattr(transform, "column_name", "") or "").strip()
+            if produced_column:
+                column_producers.setdefault(produced_column, []).append(name)
+
+        for name in ordered_transform_names:
+            transform = all_transformations.get(name)
+            if transform is None:
+                continue
+
+            for required_column in TransformSelectionService._required_input_columns(
+                transform
+            ):
+                for producer_name in column_producers.get(required_column, []):
+                    if producer_name != name:
+                        dependencies[name].add(producer_name)
+
+            if isinstance(transform, LLMAudioTransformation):
+                llm_stage = next(
+                    (
+                        candidate_name
+                        for candidate_name in ordered_transform_names
+                        if candidate_name != name
+                        and isinstance(
+                            all_transformations.get(candidate_name), LLMTransformation
+                        )
+                    ),
+                    None,
+                )
+                if llm_stage:
+                    dependencies[name].add(llm_stage)
+
+            if isinstance(transform, LLMImageTransformation):
+                image_prompt_stage = next(
+                    (
+                        candidate_name
+                        for candidate_name in ordered_transform_names
+                        if candidate_name != name
+                        and isinstance(
+                            all_transformations.get(candidate_name),
+                            LLMImagePromptTransformation,
+                        )
+                    ),
+                    None,
+                )
+                if image_prompt_stage:
+                    dependencies[name].add(image_prompt_stage)
+
+        return dependencies
+
+    @staticmethod
+    def _reorder_with_dependencies(
+        *,
+        ordered_transform_names: List[str],
+        all_transformations: Dict[str, object],
+    ) -> List[str]:
+        dependencies = TransformSelectionService._resolve_transform_dependencies(
+            ordered_transform_names=ordered_transform_names,
+            all_transformations=all_transformations,
+        )
+        pending = set(ordered_transform_names)
+        reordered: List[str] = []
+
+        while pending:
+            progressed = False
+            for name in ordered_transform_names:
+                if name not in pending:
+                    continue
+                blocked_by = dependencies.get(name, set()) & pending
+                if blocked_by:
+                    continue
+                reordered.append(name)
+                pending.remove(name)
+                progressed = True
+
+            if progressed:
+                continue
+
+            # Fallback for malformed dependency graphs: preserve remaining original order.
+            reordered.extend([name for name in ordered_transform_names if name in pending])
+            break
+
+        return reordered
 
     @staticmethod
     def validate_transform_run_selection(
@@ -276,11 +386,13 @@ class PipelineExecutionService:
         llm_profile_id: str,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         dev_mode: bool = False,
+        execution_mode: str = "default",
     ) -> PipelineRunResult:
         df_results = prepared_run.pipeline.transform_data_with_progress(
             words=words,
             dev_mode=dev_mode,
             progress_callback=progress_callback,
+            execution_mode=execution_mode,
         )
         saved_results_csv = save_pipeline_results_csv(
             df_results=df_results,
@@ -424,6 +536,7 @@ class PipelineRunService:
         llm_profile_id: str,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         dev_mode: bool = False,
+        execution_mode: str = "default",
     ) -> PipelineRunResult:
         return self.pipeline_execution_service.execute_pipeline_run(
             prepared_run=prepared_run,
@@ -431,6 +544,7 @@ class PipelineRunService:
             llm_profile_id=llm_profile_id,
             progress_callback=progress_callback,
             dev_mode=dev_mode,
+            execution_mode=execution_mode,
         )
 
     @classmethod

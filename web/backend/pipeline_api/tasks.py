@@ -3,7 +3,15 @@ from __future__ import annotations
 from celery import shared_task
 from loguru import logger
 
-from .services import execute_pipeline_run, mark_run_error, mark_run_retrying
+from .services import (
+    RunCanceledError,
+    RunPausedError,
+    execute_pipeline_run,
+    mark_run_canceled,
+    mark_run_error,
+    mark_run_paused,
+    mark_run_retrying,
+)
 from .tab_services import run_anki_background_job, run_word_extractor_background_job
 
 
@@ -14,6 +22,14 @@ RETRYABLE_EXCEPTIONS = (TimeoutError, ConnectionError)
 def run_pipeline_task(self, run_id: str) -> None:
     try:
         execute_pipeline_run(run_id)
+    except RunPausedError as exc:
+        logger.info("Pipeline run {} paused: {}", run_id, exc)
+        mark_run_paused(run_id, str(exc), record_event=False)
+        return
+    except RunCanceledError as exc:
+        logger.info("Pipeline run {} canceled: {}", run_id, exc)
+        mark_run_canceled(run_id, str(exc), record_event=False)
+        return
     except RETRYABLE_EXCEPTIONS as exc:
         if self.request.retries < self.max_retries:
             message = f"Transient failure on attempt {self.request.retries + 1}: {exc}"

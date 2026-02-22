@@ -7,8 +7,6 @@ from loguru import logger
 from ankineitor.pipeline.db_client import SQLAlchemyClient
 from ankineitor.pipeline.audio_creator import AudioCreator
 from ankineitor.pipeline.transformations import (
-    PinyinTransformation,
-    TranslationTransformation,
     AudioTransformation,
     TimestampTransformation,
 )
@@ -76,10 +74,6 @@ def get_dependencies():
             )
             # Ordered logically: basic transformations first, then LLM, then sentence audio.
             return {
-                "Pinyin": PinyinTransformation(source_language=source_language),
-                "Translation (Legacy Google/CEDICT)": TranslationTransformation(
-                    lan_in="zh-CN", lan_out="es"
-                ),
                 "Audio": AudioTransformation(
                     audio_creator=audio_creator,
                     source_language=source_language,

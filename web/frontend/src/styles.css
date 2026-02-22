@@ -329,6 +329,17 @@ button:disabled,
   font-size: 0.74rem;
 }
 
+.flow-node-progress {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: #4a5865;
+  gap: 0.3rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  line-height: 1.2;
+}
+
 .flow-node-status {
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -462,6 +473,105 @@ th {
 .page-footer {
   font-size: 0.75rem;
   color: #4d5c68;
+}
+
+.history-section {
+  gap: 0.55rem;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid #d7e2ea;
+  border-radius: 10px;
+  padding: 0.45rem;
+  background: #f8fbfd;
+}
+
+.history-item {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.history-item.active {
+  border-color: #0b7285;
+  box-shadow: 0 0 0 2px rgba(11, 114, 133, 0.16);
+}
+
+.history-item-id {
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.76rem;
+}
+
+.history-item-meta {
+  font-size: 0.78rem;
+}
+
+.admin-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.6rem;
+}
+
+.admin-metric-card {
+  min-height: 96px;
+  justify-content: center;
+}
+
+.admin-metric-value {
+  margin: 0.1rem 0 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #15496a;
+}
+
+.admin-worker-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.8rem;
+}
+
+.admin-task-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.55rem;
+}
+
+.admin-task-column h4 {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.admin-task-list {
+  border: 1px solid #d6e2ea;
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 0.45rem;
+  max-height: 180px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.admin-task-row {
+  border-bottom: 1px solid #e7eff5;
+  padding-bottom: 0.35rem;
+}
+
+.admin-task-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.admin-task-row p {
+  margin: 0.1rem 0;
 }
 
 @media (max-width: 1180px) {

@@ -1,6 +1,7 @@
 import {
   AddCategoryRequest,
   AddCategoryResponse,
+  AdminQueueMonitorResponse,
   AnkiConfigPayload,
   AnkiPresetsResponse,
   AuthTokenResponse,
@@ -10,11 +11,14 @@ import {
   BackgroundJobListResponse,
   CreateRunRequest,
   FlashcardCardResponse,
+  FlashcardCardMutationResponse,
   FlashcardDatasetSummary,
   FlashcardSavedFilesResponse,
   FlashcardSavedProfilesResponse,
   PipelineOptionsResponse,
+  RunListResponse,
   RunResultsResponse,
+  RunStatus,
   RunSummary,
 } from "../types/pipeline";
 
@@ -181,11 +185,55 @@ export function getPipelineOptions(): Promise<PipelineOptionsResponse> {
   return requestJson<PipelineOptionsResponse>("/api/pipeline/options");
 }
 
+export function getAdminQueueMonitor(): Promise<AdminQueueMonitorResponse> {
+  return requestJson<AdminQueueMonitorResponse>("/api/admin/monitor");
+}
+
+export function adminPausePipelineRun(runId: string): Promise<{ run: RunSummary }> {
+  return requestJson<{ run: RunSummary }>(`/api/admin/pipeline/runs/${runId}/pause`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function adminCancelPipelineRun(runId: string): Promise<{ run: RunSummary }> {
+  return requestJson<{ run: RunSummary }>(`/api/admin/pipeline/runs/${runId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function adminResumePipelineRun(runId: string): Promise<{ run: RunSummary }> {
+  return requestJson<{ run: RunSummary }>(`/api/admin/pipeline/runs/${runId}/resume`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export function createPipelineRun(payload: CreateRunRequest): Promise<RunSummary> {
   return requestJson<RunSummary>("/api/pipeline/runs", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function listPipelineRuns(params?: {
+  status?: RunStatus;
+  profileId?: string;
+  limit?: number;
+}): Promise<RunListResponse> {
+  const query = new URLSearchParams();
+  if (params?.status) {
+    query.set("status", params.status);
+  }
+  if (params?.profileId) {
+    query.set("profile_id", params.profileId);
+  }
+  if (params?.limit) {
+    query.set("limit", String(params.limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return requestJson<RunListResponse>(`/api/pipeline/runs${suffix}`);
 }
 
 export function getPipelineRun(runId: string): Promise<RunSummary> {
@@ -318,6 +366,62 @@ export function getFlashcardCard(params: {
   }
   return requestJson<FlashcardCardResponse>(
     `/api/flashcards/datasets/${params.datasetId}/card?${query.toString()}`,
+  );
+}
+
+export function updateFlashcardCard(params: {
+  datasetId: string;
+  index: number;
+  profileFilter?: string;
+  updates: Record<string, string | number | boolean | null>;
+}): Promise<FlashcardCardMutationResponse> {
+  return requestJson<FlashcardCardMutationResponse>(
+    `/api/flashcards/datasets/${params.datasetId}/card/update`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        index: params.index,
+        profile_filter: params.profileFilter || "",
+        updates: params.updates,
+      }),
+    },
+  );
+}
+
+export function rerunFlashcardCardGeneration(params: {
+  datasetId: string;
+  index: number;
+  profileFilter?: string;
+  mode?: "full" | "image";
+}): Promise<FlashcardCardMutationResponse> {
+  return requestJson<FlashcardCardMutationResponse>(
+    `/api/flashcards/datasets/${params.datasetId}/card/rerun`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        index: params.index,
+        profile_filter: params.profileFilter || "",
+        mode: params.mode || "full",
+      }),
+    },
+  );
+}
+
+export function uploadFlashcardCardImage(params: {
+  datasetId: string;
+  index: number;
+  profileFilter?: string;
+  imageFile: File;
+}): Promise<FlashcardCardMutationResponse> {
+  const formData = new FormData();
+  formData.append("index", String(params.index));
+  if (params.profileFilter) {
+    formData.append("profile_filter", params.profileFilter);
+  }
+  formData.append("image_file", params.imageFile);
+  return requestFormJson<FlashcardCardMutationResponse>(
+    `/api/flashcards/datasets/${params.datasetId}/card/upload-image`,
+    formData,
   );
 }
 

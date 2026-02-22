@@ -71,6 +71,69 @@ def test_create_pipeline_run_enqueues_worker(mock_resolve, mock_delay, authentic
 
 
 @pytest.mark.django_db
+def test_list_pipeline_runs_returns_owner_scoped_history_with_filters(authenticated_api_client):
+    client, user, _token = authenticated_api_client
+    other_user = get_user_model().objects.create_user("other-history", password="pass123")
+
+    first = PipelineRun.objects.create(
+        owner=user,
+        profile_id="lotm_zh_en_es",
+        source_language="Chinese (Simplified)",
+        selected_transform_names=["Audio"],
+        ordered_transform_names=["Timestamp", "Audio"],
+        input_words=["你好"],
+        total_input_words=1,
+        status=RunStatus.SUCCESS,
+    )
+    PipelineRunEvent.objects.create(
+        run=first,
+        sequence=1,
+        event_type="pipeline_complete",
+        payload={"event": "pipeline_complete"},
+    )
+    second = PipelineRun.objects.create(
+        owner=user,
+        profile_id="lotm_zh_en_es",
+        source_language="Chinese (Simplified)",
+        selected_transform_names=["Audio"],
+        ordered_transform_names=["Timestamp", "Audio"],
+        input_words=["谢谢"],
+        total_input_words=1,
+        status=RunStatus.RUNNING,
+    )
+    PipelineRun.objects.create(
+        owner=other_user,
+        profile_id="lotm_zh_en_es",
+        source_language="Chinese (Simplified)",
+        selected_transform_names=["Audio"],
+        ordered_transform_names=["Timestamp", "Audio"],
+        input_words=["陌生人"],
+        total_input_words=1,
+        status=RunStatus.SUCCESS,
+    )
+
+    response = client.get("/api/pipeline/runs", {"limit": 10})
+    assert response.status_code == 200
+    payload = response.json()
+    returned_ids = [row["id"] for row in payload["runs"]]
+    assert returned_ids == [str(second.id), str(first.id)]
+    assert payload["runs"][1]["event_count"] == 1
+
+    filtered_response = client.get("/api/pipeline/runs", {"status": "success", "limit": 10})
+    assert filtered_response.status_code == 200
+    filtered_payload = filtered_response.json()
+    assert [row["id"] for row in filtered_payload["runs"]] == [str(first.id)]
+
+
+@pytest.mark.django_db
+def test_list_pipeline_runs_rejects_invalid_status(authenticated_api_client):
+    client, _user, _token = authenticated_api_client
+    response = client.get("/api/pipeline/runs", {"status": "bad-status"})
+    assert response.status_code == 400
+    assert "status must be one of" in response.json()["detail"]
+
+
+@pytest.mark.django_db
 def test_get_run_status_returns_event_count(authenticated_api_client):
     client, user, _token = authenticated_api_client
     run = PipelineRun.objects.create(
@@ -150,7 +213,9 @@ def test_get_run_results_returns_paginated_rows_and_csv_url(authenticated_api_cl
     assert payload["run_id"] == str(run.id)
     assert payload["count"] == 2
     assert payload["csv_url"].endswith(f"/api/pipeline/runs/{run.id}/results/csv")
+    assert "timestamp" in payload["columns"]
     assert len(payload["results"]) == 1
+    assert payload["results"][0]["row_data"].get("timestamp")
 
 
 @pytest.mark.django_db

@@ -74,6 +74,31 @@ describe("App tab navigation", () => {
         if (url.includes("/api/flashcards/saved-profiles")) {
           return createMockResponse({ profiles: [] });
         }
+        if (url.includes("/api/admin/monitor")) {
+          return createMockResponse({
+            generated_at: "2026-02-22T00:00:00Z",
+            summary: {
+              active_pipeline_runs: 0,
+              active_background_jobs: 0,
+              celery_workers: 0,
+              celery_active_tasks: 0,
+              celery_reserved_tasks: 0,
+              celery_scheduled_tasks: 0,
+            },
+            pipeline_runs: [],
+            background_jobs: [],
+            celery: {
+              workers: [],
+              totals: {
+                workers: 0,
+                active_tasks: 0,
+                reserved_tasks: 0,
+                scheduled_tasks: 0,
+              },
+              error: "",
+            },
+          });
+        }
         return createMockResponse({});
       }),
     );
@@ -99,5 +124,8 @@ describe("App tab navigation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Word Extractor" }));
     expect(await screen.findByRole("heading", { name: "Word Extractor" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Admin Queue Monitor" }));
+    expect(await screen.findByRole("heading", { name: "Admin Queue Monitor" })).toBeInTheDocument();
   });
 });

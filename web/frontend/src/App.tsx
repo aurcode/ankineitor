@@ -8,17 +8,19 @@ import {
   saveAuthSession,
 } from "./api/pipeline";
 import { AnkiDeckPage } from "./pages/AnkiDeckPage";
+import { AdminQueueMonitorPage } from "./pages/AdminQueueMonitorPage";
 import { FlashcardReviewerPage } from "./pages/FlashcardReviewerPage";
 import { PipelinePage } from "./pages/PipelinePage";
 import { WordExtractorPage } from "./pages/WordExtractorPage";
 
-type WorkspaceTab = "pipeline" | "anki" | "reviewer" | "extractor";
+type WorkspaceTab = "pipeline" | "anki" | "reviewer" | "extractor" | "admin-monitor";
 
 const TAB_OPTIONS: Array<{ key: WorkspaceTab; label: string }> = [
   { key: "pipeline", label: "Pipeline" },
   { key: "anki", label: "Anki Deck Generator" },
   { key: "reviewer", label: "Flashcard Reviewer" },
   { key: "extractor", label: "Word Extractor" },
+  { key: "admin-monitor", label: "Admin Queue Monitor" },
 ];
 
 function LoginPanel(props: { onAuthenticated: (username: string, token: string) => void }) {
@@ -135,6 +137,7 @@ export default function App() {
       {activeTab === "anki" ? <AnkiDeckPage /> : null}
       {activeTab === "reviewer" ? <FlashcardReviewerPage /> : null}
       {activeTab === "extractor" ? <WordExtractorPage /> : null}
+      {activeTab === "admin-monitor" ? <AdminQueueMonitorPage /> : null}
     </div>
   );
 }

@@ -27,15 +27,21 @@ from ankineitor.pipeline.llm_profiles import (
 from ankineitor.pipeline.llm_transformation import LLMTransformation
 from ankineitor.pipeline.transformations import (
     AudioTransformation,
-    PinyinTransformation,
-    TimestampTransformation,
-    TranslationTransformation,
 )
 
 from .models import PipelineResultRow, PipelineRun, PipelineRunEvent, RunStatus
 
 
 RUN_GROUP_PREFIX = "pipeline_run_"
+PIPELINE_TERMINAL_STATUSES = {RunStatus.SUCCESS, RunStatus.ERROR, RunStatus.CANCELED}
+
+
+class RunPausedError(RuntimeError):
+    pass
+
+
+class RunCanceledError(RuntimeError):
+    pass
 
 
 @dataclass
@@ -92,16 +98,10 @@ def _build_runtime_transformations(
     )
 
     return {
-        "Pinyin": PinyinTransformation(source_language=source_language),
-        "Translation (Legacy Google/CEDICT)": TranslationTransformation(
-            lan_in="zh-CN",
-            lan_out="es",
-        ),
         "Audio": AudioTransformation(
             audio_creator=audio_creator,
             source_language=source_language,
         ),
-        "Timestamp": TimestampTransformation(),
         "LLM (Meanings/Sentences)": LLMTransformation(
             db_client=llm_db_client,
             profile_id=profile_id,
@@ -322,6 +322,34 @@ def _persist_result_rows(run: PipelineRun, df_results: pd.DataFrame) -> None:
         )
     if rows_to_create:
         PipelineResultRow.objects.bulk_create(rows_to_create, batch_size=200)
+    _populate_db_default_timestamps(run)
+
+
+def _populate_db_default_timestamps(run: PipelineRun) -> None:
+    rows_to_update: List[PipelineResultRow] = []
+    for row in PipelineResultRow.objects.filter(run=run).order_by("row_index"):
+        row_data = dict(row.row_data or {})
+        existing_timestamp = str(row_data.get("timestamp", "") or "").strip()
+        if existing_timestamp:
+            continue
+        if row.created_at:
+            row_data["timestamp"] = row.created_at.isoformat()
+        else:
+            row_data["timestamp"] = timezone.now().isoformat()
+        row.row_data = row_data
+        rows_to_update.append(row)
+
+    if rows_to_update:
+        PipelineResultRow.objects.bulk_update(rows_to_update, ["row_data"])
+
+
+def _rewrite_results_csv_from_db(run: PipelineRun, csv_path: Path) -> None:
+    rows = PipelineResultRow.objects.filter(run=run).order_by("row_index")
+    records = [dict(row.row_data or {}) for row in rows]
+    if not records:
+        return
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(records).to_csv(csv_path, index=False)
 
 
 def execute_pipeline_run(run_id: str) -> None:
@@ -329,6 +357,9 @@ def execute_pipeline_run(run_id: str) -> None:
     service = PipelineRunService()
 
     run = PipelineRun.objects.get(pk=run_id)
+    if run.status in {RunStatus.PAUSED, RunStatus.CANCELED}:
+        logger.info("Skipping run {} startup because status is {}", run_id, run.status)
+        return
     run.status = RunStatus.RUNNING
     run.started_at = timezone.now()
     run.completed_at = None
@@ -364,11 +395,7 @@ def execute_pipeline_run(run_id: str) -> None:
         table_name="hanzi_processing",
     )
 
-    total_transform_steps = max(
-        1,
-        len(prepared_run.pipeline.main_transformations)
-        + len(prepared_run.pipeline.llm_transformations),
-    )
+    total_transform_steps = max(1, len(prepared_run.ordered_transform_names))
     transform_name_map: Dict[str, str] = {}
     for configured_name, transform in zip(
         prepared_run.ordered_transform_names,
@@ -379,9 +406,31 @@ def execute_pipeline_run(run_id: str) -> None:
     progress_tracker = PipelineProgressTracker(total_transform_steps=total_transform_steps)
     counters: Dict[str, Any] = {}
     total_duration_seconds = 0.0
+    first_input_word = next(
+        (
+            str(word).strip()
+            for word in list(run.input_words or [])
+            if str(word or "").strip()
+        ),
+        "",
+    )
 
     def on_pipeline_progress(event: Dict[str, Any]) -> None:
         nonlocal total_duration_seconds
+
+        def _to_optional_int(value: Any) -> Optional[int]:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        current_status = (
+            PipelineRun.objects.filter(pk=run_id).values_list("status", flat=True).first()
+        )
+        if current_status == RunStatus.PAUSED:
+            raise RunPausedError("Paused by admin.")
+        if current_status == RunStatus.CANCELED:
+            raise RunCanceledError("Canceled by admin.")
 
         event_type = str(event.get("event", ""))
         if event_type == "cache_checked":
@@ -404,6 +453,37 @@ def execute_pipeline_run(run_id: str) -> None:
             "progress_ratio": snapshot.progress_ratio,
             "status_text": snapshot.status_text,
         }
+        if event_type == "transform_queue":
+            current_word = str(enriched_event.get("current_word", "") or "").strip()
+            if not current_word and first_input_word:
+                enriched_event["current_word"] = first_input_word
+                current_word = first_input_word
+
+            words_left = _to_optional_int(enriched_event.get("words_left"))
+            if words_left is None:
+                input_rows = _to_optional_int(event.get("input_rows"))
+                if input_rows is None:
+                    input_rows = _to_optional_int(run.total_input_words) or 0
+                enriched_event["words_left"] = max(input_rows, 0)
+
+        if event_type == "transform_start":
+            current_word = str(enriched_event.get("current_word", "") or "").strip()
+            if not current_word and first_input_word:
+                enriched_event["current_word"] = first_input_word
+                current_word = first_input_word
+
+            words_left = _to_optional_int(enriched_event.get("words_left"))
+            if words_left is None:
+                input_rows = _to_optional_int(event.get("input_rows"))
+                if input_rows is None:
+                    input_rows = _to_optional_int(run.total_input_words) or 0
+                consumed = 1 if current_word else 0
+                enriched_event["words_left"] = max(input_rows - consumed, 0)
+
+        if event_type == "transform_complete":
+            words_left = _to_optional_int(enriched_event.get("words_left"))
+            if words_left is None:
+                enriched_event["words_left"] = 0
         if transform_key:
             enriched_event["transform_key"] = transform_key
         record_run_event(str(run.id), enriched_event)
@@ -414,11 +494,13 @@ def execute_pipeline_run(run_id: str) -> None:
         llm_profile_id=run.profile_id,
         progress_callback=on_pipeline_progress,
         dev_mode=False,
+        execution_mode="parallel_word_branches",
     )
 
     _persist_result_rows(run, run_result.df_results)
 
     saved_results_path = Path(run_result.saved_results_csv)
+    _rewrite_results_csv_from_db(run, saved_results_path)
     try:
         csv_relative_path = str(saved_results_path.resolve().relative_to(Path.cwd().resolve()))
     except Exception:
@@ -447,6 +529,8 @@ def execute_pipeline_run(run_id: str) -> None:
 
 def mark_run_error(run_id: str, error_message: str) -> None:
     run = PipelineRun.objects.get(pk=run_id)
+    if run.status in {RunStatus.PAUSED, RunStatus.CANCELED}:
+        return
     run.status = RunStatus.ERROR
     run.completed_at = timezone.now()
     run.error_message = str(error_message)
@@ -464,9 +548,51 @@ def mark_run_error(run_id: str, error_message: str) -> None:
 
 def mark_run_retrying(run_id: str, error_message: str) -> None:
     run = PipelineRun.objects.get(pk=run_id)
+    if run.status in {RunStatus.PAUSED, RunStatus.CANCELED}:
+        return
     run.status = RunStatus.RETRYING
     run.error_message = str(error_message)
     run.save(update_fields=["status", "error_message", "updated_at"])
+
+
+def mark_run_paused(run_id: str, reason: str, *, record_event: bool = True) -> PipelineRun:
+    run = PipelineRun.objects.get(pk=run_id)
+    if run.status in {RunStatus.SUCCESS, RunStatus.ERROR, RunStatus.CANCELED}:
+        return run
+    run.status = RunStatus.PAUSED
+    run.completed_at = timezone.now()
+    run.error_message = str(reason or "Paused by admin.")
+    run.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+    if record_event:
+        record_run_event(
+            run_id,
+            {
+                "event": "pipeline_paused",
+                "status_text": run.error_message,
+            },
+        )
+    return run
+
+
+def mark_run_canceled(run_id: str, reason: str, *, record_event: bool = True) -> PipelineRun:
+    run = PipelineRun.objects.get(pk=run_id)
+    if run.status == RunStatus.CANCELED:
+        return run
+    if run.status in {RunStatus.SUCCESS, RunStatus.ERROR}:
+        return run
+    run.status = RunStatus.CANCELED
+    run.completed_at = timezone.now()
+    run.error_message = str(reason or "Canceled by admin.")
+    run.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+    if record_event:
+        record_run_event(
+            run_id,
+            {
+                "event": "pipeline_canceled",
+                "status_text": run.error_message,
+            },
+        )
+    return run
 
 
 def apply_category_to_run(run_id: str, category: str) -> Dict[str, Any]:

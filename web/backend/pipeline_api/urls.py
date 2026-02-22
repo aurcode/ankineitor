@@ -1,6 +1,10 @@
 from django.urls import re_path
 
 from .views import (
+    AdminQueueMonitorView,
+    AdminPipelineRunCancelView,
+    AdminPipelineRunPauseView,
+    AdminPipelineRunResumeView,
     AnkiDeckDownloadView,
     AnkiDeckGenerateView,
     AnkiPresetsView,
@@ -12,7 +16,11 @@ from .views import (
     BackgroundJobResultsCsvView,
     BackgroundJobRetryView,
     FlashcardDatasetCardView,
+    FlashcardDatasetCardImageUploadView,
+    FlashcardDatasetCardRerunView,
+    FlashcardDatasetCardUpdateView,
     FlashcardDatasetFromSavedView,
+    FlashcardAssetView,
     FlashcardDatasetSummaryView,
     FlashcardDatasetUploadView,
     FlashcardSavedFilesView,
@@ -29,6 +37,22 @@ from .views import (
 urlpatterns = [
     re_path(r"^auth/token/?$", AuthTokenView.as_view(), name="auth-token"),
     re_path(r"^pipeline/options/?$", PipelineOptionsView.as_view(), name="pipeline-options"),
+    re_path(r"^admin/monitor/?$", AdminQueueMonitorView.as_view(), name="admin-monitor"),
+    re_path(
+        r"^admin/pipeline/runs/(?P<run_id>[0-9a-fA-F-]+)/pause/?$",
+        AdminPipelineRunPauseView.as_view(),
+        name="admin-pipeline-run-pause",
+    ),
+    re_path(
+        r"^admin/pipeline/runs/(?P<run_id>[0-9a-fA-F-]+)/cancel/?$",
+        AdminPipelineRunCancelView.as_view(),
+        name="admin-pipeline-run-cancel",
+    ),
+    re_path(
+        r"^admin/pipeline/runs/(?P<run_id>[0-9a-fA-F-]+)/resume/?$",
+        AdminPipelineRunResumeView.as_view(),
+        name="admin-pipeline-run-resume",
+    ),
     re_path(r"^pipeline/runs/?$", PipelineRunCreateView.as_view(), name="pipeline-run-create"),
     re_path(r"^pipeline/runs/(?P<run_id>[0-9a-fA-F-]+)/?$", PipelineRunDetailView.as_view(), name="pipeline-run-detail"),
     re_path(
@@ -82,6 +106,26 @@ urlpatterns = [
         r"^flashcards/datasets/(?P<dataset_id>[0-9a-fA-F-]+)/card/?$",
         FlashcardDatasetCardView.as_view(),
         name="flashcards-dataset-card",
+    ),
+    re_path(
+        r"^flashcards/datasets/(?P<dataset_id>[0-9a-fA-F-]+)/card/update/?$",
+        FlashcardDatasetCardUpdateView.as_view(),
+        name="flashcards-dataset-card-update",
+    ),
+    re_path(
+        r"^flashcards/datasets/(?P<dataset_id>[0-9a-fA-F-]+)/card/rerun/?$",
+        FlashcardDatasetCardRerunView.as_view(),
+        name="flashcards-dataset-card-rerun",
+    ),
+    re_path(
+        r"^flashcards/datasets/(?P<dataset_id>[0-9a-fA-F-]+)/card/upload-image/?$",
+        FlashcardDatasetCardImageUploadView.as_view(),
+        name="flashcards-dataset-card-upload-image",
+    ),
+    re_path(
+        r"^flashcards/assets/?$",
+        FlashcardAssetView.as_view(),
+        name="flashcards-asset",
     ),
     re_path(
         r"^word-extractor/analyze/?$",

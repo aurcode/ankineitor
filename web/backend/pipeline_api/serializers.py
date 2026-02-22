@@ -46,6 +46,12 @@ class PipelineRunSummarySerializer(serializers.ModelSerializer):
     event_count = serializers.SerializerMethodField()
 
     def get_event_count(self, obj: PipelineRun) -> int:
+        annotated_event_count = getattr(obj, "event_count", None)
+        if annotated_event_count is not None:
+            try:
+                return int(annotated_event_count)
+            except Exception:
+                pass
         return obj.events.count()
 
     class Meta:
@@ -87,6 +93,15 @@ class PipelineRunEventSerializer(serializers.ModelSerializer):
 
 
 class PipelineResultRowSerializer(serializers.ModelSerializer):
+    row_data = serializers.SerializerMethodField()
+
+    def get_row_data(self, obj: PipelineResultRow) -> dict:
+        payload = dict(obj.row_data or {})
+        existing_timestamp = str(payload.get("timestamp", "") or "").strip()
+        if not existing_timestamp and obj.created_at:
+            payload["timestamp"] = obj.created_at.isoformat()
+        return payload
+
     class Meta:
         model = PipelineResultRow
         fields = ["row_index", "word", "row_data"]
@@ -149,6 +164,39 @@ class FlashcardDatasetFromSavedSerializer(serializers.Serializer):
 class FlashcardCardQuerySerializer(serializers.Serializer):
     index = serializers.IntegerField(min_value=0, required=False, default=0)
     profile_filter = serializers.CharField(max_length=128, required=False, allow_blank=True)
+
+
+class FlashcardCardUpdateSerializer(serializers.Serializer):
+    index = serializers.IntegerField(min_value=0, required=False, default=0)
+    profile_filter = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    updates = serializers.DictField(required=True)
+
+    def validate_updates(self, value: Any) -> dict:
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("updates must be an object.")
+        if not value:
+            raise serializers.ValidationError("Provide at least one field in updates.")
+        if len(value) > 200:
+            raise serializers.ValidationError("Too many updated fields (max 200).")
+
+        normalized: dict = {}
+        for raw_key, raw_item in value.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                continue
+            if len(key) > 128:
+                raise serializers.ValidationError(f"Field name '{key}' is too long (max 128).")
+            normalized[key] = raw_item
+
+        if not normalized:
+            raise serializers.ValidationError("Provide at least one valid field key.")
+        return normalized
+
+
+class FlashcardCardRerunSerializer(serializers.Serializer):
+    index = serializers.IntegerField(min_value=0, required=False, default=0)
+    profile_filter = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    mode = serializers.ChoiceField(choices=["full", "image"], required=False, default="full")
 
 
 class WordExtractorAnalyzeSerializer(serializers.Serializer):

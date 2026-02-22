@@ -8,6 +8,8 @@ class RunStatus(models.TextChoices):
     QUEUED = "queued", "Queued"
     RUNNING = "running", "Running"
     RETRYING = "retrying", "Retrying"
+    PAUSED = "paused", "Paused"
+    CANCELED = "canceled", "Canceled"
     SUCCESS = "success", "Success"
     ERROR = "error", "Error"
 

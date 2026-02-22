@@ -17,6 +17,7 @@ class LLMAudioTransformation(Transformation):
     """
 
     pipeline_stage = "llm"
+    required_input_columns = ("sentence_1",)
 
     def __init__(
         self,

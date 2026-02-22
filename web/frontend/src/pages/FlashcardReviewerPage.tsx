@@ -6,6 +6,9 @@ import {
   getFlashcardCard,
   getFlashcardSavedFiles,
   getFlashcardSavedProfiles,
+  rerunFlashcardCardGeneration,
+  updateFlashcardCard,
+  uploadFlashcardCardImage,
 } from "../api/pipeline";
 import {
   FlashcardCardResponse,
@@ -26,6 +29,15 @@ export function FlashcardReviewerPage() {
   const [profileFilter, setProfileFilter] = useState("All profiles");
   const [showBack, setShowBack] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSavingEdits, setIsSavingEdits] = useState(false);
+  const [isRerunning, setIsRerunning] = useState(false);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [customImageFile, setCustomImageFile] = useState<File | null>(null);
+  const [editMeaningEnglish, setEditMeaningEnglish] = useState("");
+  const [editMeaningSpanish, setEditMeaningSpanish] = useState("");
+  const [editMasterImagePrompt, setEditMasterImagePrompt] = useState("");
+  const [editVisualDescription, setEditVisualDescription] = useState("");
+  const [actionMessage, setActionMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
@@ -89,6 +101,16 @@ export function FlashcardReviewerPage() {
     return ["All profiles", ...summary.available_profiles];
   }, [summary]);
 
+  useEffect(() => {
+    if (!currentCard) {
+      return;
+    }
+    setEditMeaningEnglish(currentCard.back.meaning_english || "");
+    setEditMeaningSpanish(currentCard.back.meaning_spanish || "");
+    setEditMasterImagePrompt(currentCard.back.image.master_image_prompt || "");
+    setEditVisualDescription(currentCard.back.image.visual_description || "");
+  }, [currentCard?.index, currentCard?.raw_row]);
+
   const loadCard = async (index: number, selectedFilter: string): Promise<void> => {
     if (!summary) {
       return;
@@ -99,6 +121,86 @@ export function FlashcardReviewerPage() {
       profileFilter: selectedFilter === "All profiles" ? "" : selectedFilter,
     });
     setCurrentCard(payload);
+  };
+
+  const currentProfileFilter = profileFilter === "All profiles" ? "" : profileFilter;
+
+  const handleSaveEdits = async () => {
+    if (!summary || !currentCard) {
+      return;
+    }
+    setIsSavingEdits(true);
+    setErrorMessage("");
+    setActionMessage("");
+    try {
+      const payload = await updateFlashcardCard({
+        datasetId: summary.dataset_id,
+        index: currentCard.index,
+        profileFilter: currentProfileFilter,
+        updates: {
+          meaning_english: editMeaningEnglish,
+          meaning_spanish: editMeaningSpanish,
+          master_image_prompt: editMasterImagePrompt,
+          visual_description: editVisualDescription,
+        },
+      });
+      setSummary(payload.dataset);
+      setCurrentCard(payload.card);
+      setActionMessage("Edits saved.");
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setIsSavingEdits(false);
+    }
+  };
+
+  const handleRerunGeneration = async (mode: "full" | "image") => {
+    if (!summary || !currentCard) {
+      return;
+    }
+    setIsRerunning(true);
+    setErrorMessage("");
+    setActionMessage("");
+    try {
+      const payload = await rerunFlashcardCardGeneration({
+        datasetId: summary.dataset_id,
+        index: currentCard.index,
+        profileFilter: currentProfileFilter,
+        mode,
+      });
+      setSummary(payload.dataset);
+      setCurrentCard(payload.card);
+      setActionMessage(mode === "image" ? "Image generation rerun completed." : "Generation rerun completed.");
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setIsRerunning(false);
+    }
+  };
+
+  const handleUploadCustomImage = async () => {
+    if (!summary || !currentCard || !customImageFile) {
+      return;
+    }
+    setIsUploadingImage(true);
+    setErrorMessage("");
+    setActionMessage("");
+    try {
+      const payload = await uploadFlashcardCardImage({
+        datasetId: summary.dataset_id,
+        index: currentCard.index,
+        profileFilter: currentProfileFilter,
+        imageFile: customImageFile,
+      });
+      setSummary(payload.dataset);
+      setCurrentCard(payload.card);
+      setCustomImageFile(null);
+      setActionMessage("Custom image uploaded.");
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setIsUploadingImage(false);
+    }
   };
 
   const handleLoadSavedDataset = async () => {
@@ -254,6 +356,7 @@ export function FlashcardReviewerPage() {
         )}
 
         {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
+        {actionMessage ? <p className="muted">{actionMessage}</p> : null}
       </section>
 
       {summary ? (
@@ -342,9 +445,110 @@ export function FlashcardReviewerPage() {
                   {currentCard.back.image.picture ? (
                     <div>
                       <h3>Image</h3>
-                      <img src={currentCard.back.image.picture} alt="card visual" className="review-image" />
+                      <img
+                        src={currentCard.back.image.picture_url || currentCard.back.image.picture}
+                        alt="card visual"
+                        className="review-image"
+                      />
+                      <p className="muted">
+                        Render status: {currentCard.back.image.image_render_status || "unknown"}
+                      </p>
                     </div>
                   ) : null}
+
+                  <div className="panel-card">
+                    <h3>Edit Generated Content</h3>
+                    <label className="field-label" htmlFor="edit-meaning-english">
+                      Meaning (English)
+                    </label>
+                    <textarea
+                      id="edit-meaning-english"
+                      value={editMeaningEnglish}
+                      rows={2}
+                      onChange={(event) => setEditMeaningEnglish(event.target.value)}
+                    />
+
+                    <label className="field-label" htmlFor="edit-meaning-spanish">
+                      Meaning (Spanish)
+                    </label>
+                    <textarea
+                      id="edit-meaning-spanish"
+                      value={editMeaningSpanish}
+                      rows={2}
+                      onChange={(event) => setEditMeaningSpanish(event.target.value)}
+                    />
+
+                    <label className="field-label" htmlFor="edit-master-image-prompt">
+                      Master Image Prompt
+                    </label>
+                    <textarea
+                      id="edit-master-image-prompt"
+                      value={editMasterImagePrompt}
+                      rows={3}
+                      onChange={(event) => setEditMasterImagePrompt(event.target.value)}
+                    />
+
+                    <label className="field-label" htmlFor="edit-visual-description">
+                      Visual Description
+                    </label>
+                    <textarea
+                      id="edit-visual-description"
+                      value={editVisualDescription}
+                      rows={2}
+                      onChange={(event) => setEditVisualDescription(event.target.value)}
+                    />
+
+                    <div className="inline-controls wrap">
+                      <button
+                        type="button"
+                        className="primary"
+                        onClick={handleSaveEdits}
+                        disabled={isSavingEdits}
+                      >
+                        {isSavingEdits ? "Saving..." : "Save Edits"}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => {
+                          void handleRerunGeneration("full");
+                        }}
+                        disabled={isRerunning}
+                      >
+                        {isRerunning ? "Rerunning..." : "Rerun Full Generation"}
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => {
+                          void handleRerunGeneration("image");
+                        }}
+                        disabled={isRerunning}
+                      >
+                        {isRerunning ? "Rerunning..." : "Rerun Image"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="panel-card">
+                    <h3>Custom Image Override</h3>
+                    <input
+                      type="file"
+                      accept=".png,.jpg,.jpeg,.webp,.gif"
+                      onChange={(event) => setCustomImageFile(event.target.files?.[0] ?? null)}
+                    />
+                    <div className="inline-controls wrap">
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={handleUploadCustomImage}
+                        disabled={!customImageFile || isUploadingImage}
+                      >
+                        {isUploadingImage ? "Uploading..." : "Upload Custom Image"}
+                      </button>
+                      <span className="muted small">{customImageFile?.name || "No file selected"}</span>
+                    </div>
+                  </div>
                 </div>
               )}
             </>

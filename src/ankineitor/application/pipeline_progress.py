@@ -56,21 +56,39 @@ class PipelineProgressTracker:
             return self.snapshot()
 
         if event_type == "transform_complete":
-            self.steps_completed += 1
+            step_complete = bool(event.get("step_complete", True))
+            if step_complete:
+                self.steps_completed += 1
             duration_seconds = float(event.get("duration_seconds", 0.0) or 0.0)
-            self._step_timings.append(
-                {
-                    "stage": str(event.get("stage", "")),
-                    "step": str(event.get("transform_name", "")),
-                    "seconds": round(duration_seconds, 2),
-                }
-            )
             transform_name = str(event.get("transform_name", ""))
-            self._status_text = (
-                f"{transform_name} finished in {duration_seconds:.2f}s"
-            )
-            completion_ratio = self.steps_completed / float(self.total_transform_steps)
-            self._progress_ratio = min(0.95, max(self._progress_ratio, completion_ratio))
+            current_word = str(event.get("current_word", "") or "").strip()
+            if step_complete:
+                total_duration = float(
+                    event.get("transform_total_duration_seconds", duration_seconds) or 0.0
+                )
+                self._step_timings.append(
+                    {
+                        "stage": str(event.get("stage", "")),
+                        "step": transform_name,
+                        "seconds": round(total_duration, 2),
+                    }
+                )
+                self._status_text = (
+                    f"{transform_name} finished in {total_duration:.2f}s"
+                )
+                completion_ratio = self.steps_completed / float(self.total_transform_steps)
+                self._progress_ratio = min(0.95, max(self._progress_ratio, completion_ratio))
+            else:
+                queued_count = int(event.get("queued_count", 0) or 0)
+                if current_word:
+                    self._status_text = (
+                        f"{transform_name}: finished '{current_word}', {queued_count} words queued."
+                    )
+                else:
+                    self._status_text = (
+                        f"{transform_name}: word finished in {duration_seconds:.2f}s, "
+                        f"{queued_count} words queued."
+                    )
             return self.snapshot()
 
         if event_type == "pipeline_complete":

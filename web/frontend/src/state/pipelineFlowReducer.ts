@@ -4,10 +4,19 @@ import {
   PipelineEventPayload,
 } from "../types/pipeline";
 
+export interface NodeRuntimeState {
+  currentWord: string;
+  wordsLeft: number | null;
+  runningWords: string[];
+  queuedWords: string[];
+}
+
 export interface GraphExecutionState {
   nodeStatuses: Record<string, NodeExecutionStatus>;
   nodeDurations: Record<string, number>;
+  nodeRuntime: Record<string, NodeRuntimeState>;
   activeNode: string | null;
+  activeNodes: string[];
   statusText: string;
   progressRatio: number;
   counters: Record<string, number>;
@@ -15,8 +24,6 @@ export interface GraphExecutionState {
 }
 
 const CLASS_NAME_TO_LABEL: Record<string, string> = {
-  PinyinTransformation: "Pinyin",
-  TranslationTransformation: "Translation (Legacy Google/CEDICT)",
   AudioTransformation: "Audio",
   TimestampTransformation: "Timestamp",
   LLMTransformation: "LLM (Meanings/Sentences)",
@@ -66,16 +73,53 @@ function mapEventToNode(payload: PipelineEventPayload, nodes: string[]): string 
   return null;
 }
 
+function toWordsLeft(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(Math.floor(value), 0);
+}
+
+function toCurrentWord(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function toWordList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter((item) => item.length > 0);
+}
+
+function defaultRuntimeState(): NodeRuntimeState {
+  return {
+    currentWord: "",
+    wordsLeft: null,
+    runningWords: [],
+    queuedWords: [],
+  };
+}
+
 export function initializeGraphState(transformNames: string[]): GraphExecutionState {
   const nodeStatuses: Record<string, NodeExecutionStatus> = {};
+  const nodeRuntime: Record<string, NodeRuntimeState> = {};
   for (const name of transformNames) {
     nodeStatuses[name] = "queued";
+    nodeRuntime[name] = defaultRuntimeState();
   }
 
   return {
     nodeStatuses,
     nodeDurations: {},
+    nodeRuntime,
     activeNode: null,
+    activeNodes: [],
     statusText: "",
     progressRatio: 0,
     counters: {},
@@ -92,8 +136,9 @@ export function applyPipelineEvent(
   const eventType = String(payload.event || "");
   const nextStatuses: Record<string, NodeExecutionStatus> = { ...previous.nodeStatuses };
   const nextDurations = { ...previous.nodeDurations };
+  const nextNodeRuntime = { ...previous.nodeRuntime };
   const nextCounters = { ...previous.counters };
-  let activeNode = previous.activeNode;
+  const nextActiveNodes = new Set(previous.activeNodes);
   let progressRatio = previous.progressRatio;
 
   const resolvedNode = mapEventToNode(payload, transformNames);
@@ -121,17 +166,104 @@ export function applyPipelineEvent(
     }
   }
 
+  if (eventType === "transform_queue" && resolvedNode) {
+    const previousRuntime = previous.nodeRuntime[resolvedNode] ?? defaultRuntimeState();
+    const eventCurrentWord = toCurrentWord(payload.current_word);
+    const eventWordsLeft = toWordsLeft(payload.words_left);
+    const eventQueuedWords = toWordList(payload.queued_words);
+    const queuedWords = eventQueuedWords ?? previousRuntime.queuedWords;
+
+    nextNodeRuntime[resolvedNode] = {
+      currentWord: eventCurrentWord ?? previousRuntime.currentWord,
+      wordsLeft:
+        eventWordsLeft !== null
+          ? eventWordsLeft
+          : queuedWords.length > 0
+            ? queuedWords.length
+            : previousRuntime.wordsLeft,
+      runningWords: [],
+      queuedWords,
+    };
+
+    if (nextStatuses[resolvedNode] !== "running" && nextStatuses[resolvedNode] !== "error") {
+      nextStatuses[resolvedNode] = "queued";
+    }
+  }
+
   if (eventType === "transform_start" && resolvedNode) {
     nextStatuses[resolvedNode] = "running";
-    activeNode = resolvedNode;
+    nextActiveNodes.add(resolvedNode);
+
+    const previousRuntime = previous.nodeRuntime[resolvedNode] ?? defaultRuntimeState();
+    const eventCurrentWord = toCurrentWord(payload.current_word);
+    const eventWordsLeft = toWordsLeft(payload.words_left);
+    const eventRunningWords = toWordList(payload.running_words);
+    const eventQueuedWords = toWordList(payload.queued_words);
+    const inputRows = toWordsLeft(payload.input_rows);
+    const fallbackWordsLeft =
+      inputRows !== null ? Math.max(inputRows - (eventCurrentWord ? 1 : 0), 0) : null;
+    const runningWords =
+      eventRunningWords ??
+      (eventCurrentWord
+        ? Array.from(new Set([...previousRuntime.runningWords, eventCurrentWord]))
+        : previousRuntime.runningWords);
+    const queuedWords = eventQueuedWords ?? previousRuntime.queuedWords;
+
+    nextNodeRuntime[resolvedNode] = {
+      currentWord: eventCurrentWord ?? previousRuntime.currentWord,
+      wordsLeft:
+        eventWordsLeft !== null
+          ? eventWordsLeft
+          : queuedWords.length > 0
+            ? queuedWords.length
+            : fallbackWordsLeft !== null
+              ? fallbackWordsLeft
+              : previousRuntime.wordsLeft,
+      runningWords,
+      queuedWords,
+    };
   }
 
   if (eventType === "transform_complete" && resolvedNode) {
     const hasError = Boolean(payload.error);
-    nextStatuses[resolvedNode] = hasError ? "error" : "success";
-    activeNode = hasError ? resolvedNode : activeNode === resolvedNode ? null : activeNode;
     if (typeof payload.duration_seconds === "number") {
       nextDurations[resolvedNode] = payload.duration_seconds;
+    }
+
+    const previousRuntime = previous.nodeRuntime[resolvedNode] ?? defaultRuntimeState();
+    const eventCurrentWord = toCurrentWord(payload.current_word);
+    const eventWordsLeft = toWordsLeft(payload.words_left);
+    const eventRunningWords = toWordList(payload.running_words);
+    const eventQueuedWords = toWordList(payload.queued_words);
+    const runningWords =
+      eventRunningWords ??
+      previousRuntime.runningWords.filter((word) => !eventCurrentWord || word !== eventCurrentWord);
+    const queuedWords = eventQueuedWords ?? previousRuntime.queuedWords;
+
+    nextNodeRuntime[resolvedNode] = {
+      currentWord: eventCurrentWord ?? previousRuntime.currentWord,
+      wordsLeft:
+        eventWordsLeft !== null
+          ? eventWordsLeft
+          : queuedWords.length > 0
+            ? queuedWords.length
+            : 0,
+      runningWords,
+      queuedWords,
+    };
+
+    if (hasError) {
+      nextStatuses[resolvedNode] = "error";
+      nextActiveNodes.delete(resolvedNode);
+    } else if (runningWords.length > 0) {
+      nextStatuses[resolvedNode] = "running";
+      nextActiveNodes.add(resolvedNode);
+    } else if (queuedWords.length > 0) {
+      nextStatuses[resolvedNode] = "queued";
+      nextActiveNodes.delete(resolvedNode);
+    } else {
+      nextStatuses[resolvedNode] = "success";
+      nextActiveNodes.delete(resolvedNode);
     }
   }
 
@@ -140,14 +272,22 @@ export function applyPipelineEvent(
       if (nextStatuses[name] === "queued" || nextStatuses[name] === "running") {
         nextStatuses[name] = "success";
       }
+      const previousRuntime = nextNodeRuntime[name] ?? defaultRuntimeState();
+      nextNodeRuntime[name] = {
+        currentWord: previousRuntime.currentWord,
+        wordsLeft: 0,
+        runningWords: [],
+        queuedWords: [],
+      };
     }
-    activeNode = null;
+    nextActiveNodes.clear();
   }
 
   if (eventType === "pipeline_error") {
-    if (activeNode) {
-      nextStatuses[activeNode] = "error";
+    for (const node of nextActiveNodes) {
+      nextStatuses[node] = "error";
     }
+    nextActiveNodes.clear();
   }
 
   if (typeof payload.progress_ratio === "number") {
@@ -159,10 +299,15 @@ export function applyPipelineEvent(
     nextLog.splice(0, nextLog.length - 200);
   }
 
+  const orderedActiveNodes = transformNames.filter((name) => nextActiveNodes.has(name));
+  const activeNode = orderedActiveNodes[0] ?? null;
+
   return {
     nodeStatuses: nextStatuses,
     nodeDurations: nextDurations,
+    nodeRuntime: nextNodeRuntime,
     activeNode,
+    activeNodes: orderedActiveNodes,
     statusText: String(payload.status_text || previous.statusText || ""),
     progressRatio,
     counters: nextCounters,

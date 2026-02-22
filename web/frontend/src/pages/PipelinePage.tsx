@@ -7,6 +7,7 @@ import {
   getPipelineOptions,
   getPipelineRun,
   getPipelineRunResults,
+  listPipelineRuns,
 } from "../api/pipeline";
 import { PipelineFlow } from "../components/PipelineFlow";
 import { PipelineRunForm } from "../components/PipelineRunForm";
@@ -17,10 +18,29 @@ import {
   GraphExecutionState,
   initializeGraphState,
 } from "../state/pipelineFlowReducer";
-import { PipelineOptionsResponse, RunResultsResponse, RunSummary } from "../types/pipeline";
+import {
+  PipelineOptionsResponse,
+  RunResultsResponse,
+  RunStatus,
+  RunSummary,
+} from "../types/pipeline";
 import { subscribeToPipelineRun } from "../ws/pipeline";
 
 const PAGE_SIZE = 25;
+const HISTORY_LIMIT = 40;
+
+type HistoryStatusFilter = "all" | RunStatus;
+
+const HISTORY_STATUS_OPTIONS: Array<{ value: HistoryStatusFilter; label: string }> = [
+  { value: "all", label: "All statuses" },
+  { value: "success", label: "Success" },
+  { value: "error", label: "Error" },
+  { value: "paused", label: "Paused" },
+  { value: "canceled", label: "Canceled" },
+  { value: "running", label: "Running" },
+  { value: "queued", label: "Queued" },
+  { value: "retrying", label: "Retrying" },
+];
 
 function parseWords(input: string): string[] {
   return input
@@ -49,6 +69,32 @@ function parsePageFromUrl(url: string | null | undefined): number | null {
   }
 }
 
+function formatTimestamp(value: string | null | undefined): string {
+  if (!value) {
+    return "n/a";
+  }
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
+  }
+}
+
+function toTime(value: string | null | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function upsertRunHistory(previous: RunSummary[], incoming: RunSummary): RunSummary[] {
+  const filtered = previous.filter((run) => run.id !== incoming.id);
+  const next = [incoming, ...filtered];
+  next.sort((left, right) => toTime(right.created_at) - toTime(left.created_at));
+  return next;
+}
+
 export function PipelinePage() {
   const [options, setOptions] = useState<PipelineOptionsResponse | null>(null);
   const [selectedProfileId, setSelectedProfileId] = useState("");
@@ -62,6 +108,9 @@ export function PipelinePage() {
   const [resultsPage, setResultsPage] = useState(1);
   const [resultsSearch, setResultsSearch] = useState("");
   const [resultsLoading, setResultsLoading] = useState(false);
+  const [runHistory, setRunHistory] = useState<RunSummary[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatusFilter>("all");
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [categoryUpdating, setCategoryUpdating] = useState(false);
@@ -105,6 +154,21 @@ export function PipelinePage() {
     }
   };
 
+  const fetchRunHistory = async (statusFilter: HistoryStatusFilter): Promise<void> => {
+    setHistoryLoading(true);
+    try {
+      const payload = await listPipelineRuns({
+        status: statusFilter === "all" ? undefined : statusFilter,
+        limit: HISTORY_LIMIT,
+      });
+      setRunHistory(Array.isArray(payload.runs) ? payload.runs : []);
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   useEffect(() => {
     let active = true;
 
@@ -138,6 +202,10 @@ export function PipelinePage() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    void fetchRunHistory(historyStatus);
+  }, [historyStatus]);
 
   useEffect(() => {
     if (!selectedProfile) {
@@ -186,7 +254,11 @@ export function PipelinePage() {
       return;
     }
 
-    const isTerminal = run.status === "success" || run.status === "error";
+    const isTerminal =
+      run.status === "success" ||
+      run.status === "error" ||
+      run.status === "paused" ||
+      run.status === "canceled";
     if (isTerminal) {
       return;
     }
@@ -195,6 +267,7 @@ export function PipelinePage() {
       void getPipelineRun(run.id)
         .then((freshRun) => {
           setRun(freshRun);
+          setRunHistory((previous) => upsertRunHistory(previous, freshRun));
         })
         .catch((error) => {
           setErrorMessage(String(error));
@@ -237,8 +310,10 @@ export function PipelinePage() {
       });
 
       setRun(createdRun);
+      setRunHistory((previous) => upsertRunHistory(previous, createdRun));
       setResults(null);
       setResultsPage(1);
+      setResultsSearch("");
       setGraphState(initializeGraphState(createdRun.ordered_transform_names));
     } catch (error) {
       setErrorMessage(String(error));
@@ -271,6 +346,7 @@ export function PipelinePage() {
     try {
       const response = await addCategoryToRun(run.id, { category });
       setRun(response.run);
+      setRunHistory((previous) => upsertRunHistory(previous, response.run));
       await fetchResults(run.id, resultsPage, resultsSearch);
     } catch (error) {
       setErrorMessage(String(error));
@@ -296,6 +372,21 @@ export function PipelinePage() {
       setErrorMessage(String(error));
     } finally {
       setCsvDownloading(false);
+    }
+  };
+
+  const handleSelectHistoryRun = async (runId: string) => {
+    setErrorMessage("");
+    try {
+      const selectedRun = await getPipelineRun(runId);
+      setRun(selectedRun);
+      setRunHistory((previous) => upsertRunHistory(previous, selectedRun));
+      setGraphState(initializeGraphState(selectedRun.ordered_transform_names));
+      setResults(null);
+      setResultsPage(1);
+      setResultsSearch("");
+    } catch (error) {
+      setErrorMessage(String(error));
     }
   };
 
@@ -332,7 +423,8 @@ export function PipelinePage() {
             transformNames={run?.ordered_transform_names ?? []}
             nodeStatuses={graphState.nodeStatuses}
             nodeDurations={graphState.nodeDurations}
-            activeNode={graphState.activeNode}
+            nodeRuntime={graphState.nodeRuntime}
+            activeNodes={graphState.activeNodes}
           />
         </section>
 
@@ -344,6 +436,66 @@ export function PipelinePage() {
           events={graphState.eventLog}
         />
       </main>
+
+      <section className="panel-block history-section">
+        <div className="inline-controls wrap">
+          <h2>Prediction History</h2>
+          <label className="field-label" htmlFor="history-status-filter">
+            Status
+          </label>
+          <select
+            id="history-status-filter"
+            value={historyStatus}
+            onChange={(event) => setHistoryStatus(event.target.value as HistoryStatusFilter)}
+          >
+            {HISTORY_STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              void fetchRunHistory(historyStatus);
+            }}
+            disabled={historyLoading}
+          >
+            {historyLoading ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+        <p className="muted small">
+          Open any previous run to inspect graph events and download historical CSV results.
+        </p>
+        {runHistory.length === 0 ? (
+          <p className="muted">No past runs found for this account.</p>
+        ) : (
+          <div className="history-list">
+            {runHistory.map((historyRun) => (
+              <button
+                key={historyRun.id}
+                type="button"
+                className={
+                  run?.id === historyRun.id ? "history-item active secondary" : "history-item secondary"
+                }
+                onClick={() => {
+                  void handleSelectHistoryRun(historyRun.id);
+                }}
+              >
+                <span className="history-item-id">{historyRun.id}</span>
+                <span className="history-item-meta">
+                  {historyRun.status} | {historyRun.profile_id} | words {historyRun.total_input_words}
+                </span>
+                <span className="history-item-meta">
+                  created {formatTimestamp(historyRun.created_at)} | completed{" "}
+                  {formatTimestamp(historyRun.completed_at)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
 
       <ResultsTable
         runId={run?.id ?? null}

@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import tempfile
+import uuid
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +25,7 @@ from ankineitor.common.pipeline_result_store import (
     list_saved_csv_files_for_profile,
     list_saved_profiles,
 )
+from ankineitor.pipeline.llm_profiles import DEFAULT_LLM_PROFILE_ID, get_llm_profile
 from ankineitor.pipeline.text_extractor import TextExtractor
 from ankineitor.security import sanitize_filename, validate_file_upload
 from ankineitor.security.exceptions import InvalidFileError, ValidationError
@@ -43,6 +45,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ALLOWED_WORD_EXTRACTOR_EXTENSIONS = [".pdf", ".docx", ".txt", ".pptx"]
 SAFE_DECK_NAME_PATTERN = re.compile(r"^[A-Za-z0-9 _\-]{2,120}$")
 JOB_GROUP_PREFIX = "background_job_"
+FLASHCARD_ASSET_ALLOWED_DIRS = (
+    PROJECT_ROOT / "my_image_files",
+    PROJECT_ROOT / "my_audio_files",
+    Path(settings.MEDIA_ROOT),
+)
+FLASHCARD_CUSTOM_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
 
 
 def _safe_text(value: Any) -> str:
@@ -54,6 +62,54 @@ def _safe_text(value: Any) -> str:
     except Exception:
         pass
     return str(value).strip()
+
+
+def _is_remote_asset(value: str) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized.startswith(("http://", "https://", "data:"))
+
+
+def _remap_known_asset_path(raw_path: str) -> Optional[Path]:
+    normalized = str(raw_path or "").strip().replace("\\", "/")
+    for directory_name in ("my_image_files", "my_audio_files", "media"):
+        marker = f"/{directory_name}/"
+        if marker in normalized:
+            suffix = normalized.split(marker, 1)[1].lstrip("/")
+            return PROJECT_ROOT / directory_name / suffix
+        if normalized.endswith(f"/{directory_name}"):
+            return PROJECT_ROOT / directory_name
+    return None
+
+
+def resolve_flashcard_asset_path(path_value: str) -> Path:
+    raw_path = _safe_text(path_value)
+    if not raw_path:
+        raise ValueError("Asset path is empty.")
+    if _is_remote_asset(raw_path):
+        raise ValueError("Remote assets are not served through this endpoint.")
+
+    allowed_roots = [base.resolve() for base in FLASHCARD_ASSET_ALLOWED_DIRS]
+
+    def _is_allowed(resolved_path: Path) -> bool:
+        return any(
+            resolved_path == allowed_root or allowed_root in resolved_path.parents
+            for allowed_root in allowed_roots
+        )
+
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    resolved = candidate.resolve()
+    if _is_allowed(resolved):
+        return resolved
+
+    remapped = _remap_known_asset_path(raw_path)
+    if remapped is not None:
+        remapped_resolved = remapped.resolve()
+        if _is_allowed(remapped_resolved):
+            return remapped_resolved
+
+    raise ValueError("Asset path is outside allowed directories.")
 
 
 def _to_json_safe(value: Any) -> Any:
@@ -361,14 +417,56 @@ def _load_dataset_cache(path_str: str, mtime_ns: int, size: int) -> pd.DataFrame
     return _read_dataset_from_path(Path(path_str))
 
 
-def _load_dataset_dataframe(dataset: FlashcardDataset) -> pd.DataFrame:
+def _resolve_dataset_csv_path(dataset: FlashcardDataset) -> Path:
     csv_path = Path(dataset.csv_path)
     if not csv_path.is_absolute():
         csv_path = PROJECT_ROOT / csv_path
-    csv_path = csv_path.resolve()
+    return csv_path.resolve()
+
+
+def _load_dataset_dataframe(dataset: FlashcardDataset) -> pd.DataFrame:
+    csv_path = _resolve_dataset_csv_path(dataset)
     stats = csv_path.stat()
     cached = _load_dataset_cache(csv_path.as_posix(), int(stats.st_mtime_ns), int(stats.st_size))
     return cached.copy()
+
+
+def _persist_dataset_dataframe(dataset: FlashcardDataset, df: pd.DataFrame) -> pd.DataFrame:
+    csv_path = _resolve_dataset_csv_path(dataset)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    normalized = _normalize_reviewer_dataframe(df)
+    normalized.to_csv(csv_path, index=False)
+    _load_dataset_cache.cache_clear()
+
+    dataset.total_cards = int(len(normalized))
+    dataset.columns = list(normalized.columns)
+    dataset.save(update_fields=["total_cards", "columns"])
+    return normalized
+
+
+def _resolve_card_source_index(
+    *,
+    df: pd.DataFrame,
+    index: int,
+    profile_filter: Optional[str],
+) -> Tuple[int, int, int]:
+    indexed = df.reset_index(drop=False).rename(columns={"index": "__source_index"})
+
+    normalized_filter = _safe_text(profile_filter)
+    if normalized_filter and normalized_filter != "All profiles" and "profile_id" in indexed.columns:
+        indexed = (
+            indexed[indexed["profile_id"].astype(str).str.strip() == normalized_filter]
+            .copy()
+            .reset_index(drop=True)
+        )
+
+    if indexed.empty:
+        raise ValueError("No cards available for this dataset/filter.")
+
+    safe_index = max(0, min(int(index), len(indexed) - 1))
+    source_index = int(indexed.iloc[safe_index]["__source_index"])
+    return source_index, safe_index, len(indexed)
 
 
 def _dataset_summary_payload(dataset: FlashcardDataset, df: pd.DataFrame) -> Dict[str, Any]:
@@ -724,21 +822,203 @@ def get_flashcard_card(
 ) -> Dict[str, Any]:
     dataset = FlashcardDataset.objects.get(pk=dataset_id, owner=owner)
     df = _load_dataset_dataframe(dataset)
+    source_index, safe_index, filtered_total = _resolve_card_source_index(
+        df=df,
+        index=index,
+        profile_filter=profile_filter,
+    )
+    row = df.iloc[source_index]
+    return _build_flashcard_card_payload(row=row, index=safe_index, total=filtered_total)
 
-    normalized_filter = _safe_text(profile_filter)
-    if normalized_filter and normalized_filter != "All profiles" and "profile_id" in df.columns:
-        df = (
-            df[df["profile_id"].astype(str).str.strip() == normalized_filter]
-            .copy()
-            .reset_index(drop=True)
-        )
 
-    if df.empty:
-        raise ValueError("No cards available for this dataset/filter.")
+def update_flashcard_card_fields(
+    *,
+    dataset_id: str,
+    owner,
+    index: int,
+    profile_filter: Optional[str],
+    updates: Dict[str, Any],
+) -> Dict[str, Any]:
+    dataset = FlashcardDataset.objects.get(pk=dataset_id, owner=owner)
+    df = _load_dataset_dataframe(dataset)
+    source_index, safe_index, filtered_total = _resolve_card_source_index(
+        df=df,
+        index=index,
+        profile_filter=profile_filter,
+    )
 
-    safe_index = max(0, min(int(index), len(df) - 1))
-    row = df.iloc[safe_index]
-    return _build_flashcard_card_payload(row=row, index=safe_index, total=len(df))
+    normalized_updates: Dict[str, Any] = {}
+    for raw_key, raw_value in dict(updates or {}).items():
+        key = _safe_text(raw_key)
+        if not key:
+            continue
+        normalized_updates[key] = raw_value
+    if not normalized_updates:
+        raise ValueError("Provide at least one field to update.")
+
+    for key, value in normalized_updates.items():
+        df.at[source_index, key] = value
+
+    persisted = _persist_dataset_dataframe(dataset, df)
+    row = persisted.iloc[source_index]
+    return {
+        "dataset": _dataset_summary_payload(dataset, persisted),
+        "card": _build_flashcard_card_payload(row=row, index=safe_index, total=filtered_total),
+    }
+
+
+def upload_flashcard_card_custom_image(
+    *,
+    dataset_id: str,
+    owner,
+    index: int,
+    profile_filter: Optional[str],
+    file_name: str,
+    file_bytes: bytes,
+) -> Dict[str, Any]:
+    safe_name = sanitize_filename(file_name)
+    validate_file_upload(
+        _UploadProxy(safe_name, file_bytes),
+        expected_extensions=FLASHCARD_CUSTOM_IMAGE_EXTENSIONS,
+    )
+
+    target_dir = Path(settings.MEDIA_ROOT) / "flashcard_custom_images" / str(dataset_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}_{safe_name}"
+    target_path = target_dir / stored_name
+    target_path.write_bytes(file_bytes)
+
+    try:
+        stored_path = str(target_path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except Exception:
+        stored_path = target_path.as_posix()
+
+    return update_flashcard_card_fields(
+        dataset_id=dataset_id,
+        owner=owner,
+        index=index,
+        profile_filter=profile_filter,
+        updates={
+            "picture": stored_path,
+            "image_render_status": "custom_upload",
+            "image_render_skip_reason": "",
+            "image_generation_skip_reason": "",
+        },
+    )
+
+
+def rerun_flashcard_card_generation(
+    *,
+    dataset_id: str,
+    owner,
+    index: int,
+    profile_filter: Optional[str],
+    mode: str,
+) -> Dict[str, Any]:
+    dataset = FlashcardDataset.objects.get(pk=dataset_id, owner=owner)
+    df = _load_dataset_dataframe(dataset)
+    source_index, safe_index, filtered_total = _resolve_card_source_index(
+        df=df,
+        index=index,
+        profile_filter=profile_filter,
+    )
+
+    row = df.iloc[source_index]
+    word = _safe_text(row.get("word"))
+    if not word:
+        raise ValueError("Selected card does not contain a word value.")
+
+    profile_id = _safe_text(row.get("profile_id")) or DEFAULT_LLM_PROFILE_ID
+    try:
+        selected_profile = get_llm_profile(profile_id)
+        profile_id = selected_profile.profile_id
+    except Exception:
+        selected_profile = get_llm_profile(DEFAULT_LLM_PROFILE_ID)
+        profile_id = selected_profile.profile_id
+
+    selected_transform_names: List[str]
+    normalized_mode = _safe_text(mode).lower()
+    if normalized_mode == "image":
+        selected_transform_names = [
+            "LLM Image Prompt (Visual Translator)",
+            "LLM Image Renderer (Master Prompt)",
+        ]
+    elif normalized_mode == "full":
+        selected_transform_names = []
+    else:
+        raise ValueError("mode must be one of: full, image.")
+
+    from .services import get_pipeline_runtime, resolve_ordered_transform_names
+
+    runtime = get_pipeline_runtime()
+    (
+        resolved_selected_transforms,
+        ordered_transform_names,
+        source_language,
+    ) = resolve_ordered_transform_names(
+        profile_id=profile_id,
+        selected_transform_names=selected_transform_names,
+    )
+
+    from ankineitor.application import PipelineRunService
+
+    pipeline_service = PipelineRunService()
+    prepared_run = pipeline_service.prepare_pipeline_run(
+        pipeline_db_client=runtime.pipeline_db_client,
+        all_transformations=runtime.all_transformations,
+        ordered_transform_names=ordered_transform_names,
+        llm_profile_id=profile_id,
+        llm_source_language=source_language,
+        transform_factory=runtime.transform_factory,
+        table_name="hanzi_processing",
+    )
+    run_result = pipeline_service.execute_pipeline_run(
+        prepared_run=prepared_run,
+        words=[word],
+        llm_profile_id=profile_id,
+        progress_callback=None,
+        dev_mode=False,
+        execution_mode="parallel_word_branches",
+    )
+    if run_result.df_results.empty:
+        raise ValueError("Rerun did not produce any result rows.")
+
+    generated_row = run_result.df_results.iloc[0].to_dict()
+    if normalized_mode == "image":
+        columns_to_replace = {
+            "master_image_prompt",
+            "visual_description",
+            "image_term_type",
+            "picture",
+            "image_generation_skip_reason",
+            "image_render_status",
+            "image_render_skip_reason",
+        }
+    else:
+        columns_to_replace = {
+            str(column)
+            for column in generated_row.keys()
+            if str(column) not in {"word", "timestamp", "categories"}
+        }
+
+    for column_name in columns_to_replace:
+        if column_name not in generated_row:
+            continue
+        df.at[source_index, column_name] = generated_row.get(column_name)
+
+    df.at[source_index, "profile_id"] = profile_id
+    persisted = _persist_dataset_dataframe(dataset, df)
+    updated_row = persisted.iloc[source_index]
+    return {
+        "dataset": _dataset_summary_payload(dataset, persisted),
+        "card": _build_flashcard_card_payload(
+            row=updated_row,
+            index=safe_index,
+            total=filtered_total,
+        ),
+        "rerun_mode": normalized_mode,
+        "applied_transforms": resolved_selected_transforms,
+    }
 
 
 def _records_from_dataframe(df: pd.DataFrame) -> List[Dict[str, Any]]:
