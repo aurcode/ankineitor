@@ -160,6 +160,39 @@ def test_add_category_to_results_updates_dataframe_with_joined_categories():
     assert categorized["categories"].tolist() == ["HSK1", "HSK1"]
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("  HSK1  ", "HSK1"),
+        ("My List", "My List"),
+        ("A_B-C 1", "A_B-C 1"),
+    ],
+)
+def test_normalize_category_name_accepts_and_trims_valid_values(raw, expected):
+    service = PipelineRunService()
+
+    assert service.normalize_category_name(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected_error",
+    [
+        ("", "Please enter a category name."),
+        (" ", "Please enter a category name."),
+        ("A", "Category name must be at least 2 characters long."),
+        (
+            "bad/category",
+            "Category name contains invalid characters.",
+        ),
+    ],
+)
+def test_normalize_category_name_rejects_invalid_values(raw, expected_error):
+    service = PipelineRunService()
+
+    with pytest.raises(ValueError, match=expected_error):
+        service.normalize_category_name(raw)
+
+
 def test_validate_transform_run_selection_requires_configured_transforms():
     service = PipelineRunService()
     profile = _build_test_profile(supports_images=True)

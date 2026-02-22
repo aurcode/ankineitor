@@ -1,11 +1,14 @@
 import streamlit as st
 import pandas as pd
-import re
 from pathlib import Path
-from typing import Dict, List
 from loguru import logger
 
-from ankineitor.application import PipelineRunService
+from ankineitor.application import (
+    PIPELINE_SESSION_KEYS,
+    PipelineProgressTracker,
+    PipelineRunService,
+    PipelineTabStateService,
+)
 from ankineitor.pipeline.llm_profiles import (
     DEFAULT_LLM_PROFILE_ID,
     get_llm_profile,
@@ -13,9 +16,9 @@ from ankineitor.pipeline.llm_profiles import (
 )
 from ankineitor.security import validate_word_input, ValidationError
 
-PROFILE_TRANSFORM_SELECTIONS_KEY = "pipeline_selected_transform_names_by_profile"
-SELECTED_TRANSFORM_WIDGET_KEY = "pipeline_selected_transform_names"
-TRANSFORM_SELECTOR_PROFILE_KEY = "pipeline_transform_selector_profile_id"
+PROFILE_TRANSFORM_SELECTIONS_KEY = PIPELINE_SESSION_KEYS.profile_transform_selections
+SELECTED_TRANSFORM_WIDGET_KEY = PIPELINE_SESSION_KEYS.selected_transform_widget
+TRANSFORM_SELECTOR_PROFILE_KEY = PIPELINE_SESSION_KEYS.transform_selector_profile
 LAST_SAVED_RESULTS_CSV_KEY = "pipeline_last_saved_results_csv"
 LAST_RESULTS_PROFILE_KEY = "pipeline_last_results_profile"
 
@@ -134,17 +137,9 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
         return
 
     col1, col2 = st.columns(2)
-    if PROFILE_TRANSFORM_SELECTIONS_KEY not in st.session_state or not isinstance(
-        st.session_state.get(PROFILE_TRANSFORM_SELECTIONS_KEY), dict
-    ):
-        st.session_state[PROFILE_TRANSFORM_SELECTIONS_KEY] = {}
-
-    if "pipeline_word_input" not in st.session_state:
-        st.session_state["pipeline_word_input"] = "你好\n谢谢\n熊猫\n数据"
-
-    if "pipeline_category_name" not in st.session_state:
-        st.session_state["pipeline_category_name"] = ""
     pipeline_service = PipelineRunService()
+    pipeline_tab_state_service = PipelineTabStateService()
+    pipeline_tab_state_service.initialize_session_defaults(st.session_state)
 
     with col1:
         st.subheader("1. Profile")
@@ -179,44 +174,31 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
             transform_options.always_included_transform_names
         )
 
-        profile_transform_map: Dict[str, List[str]] = st.session_state[
-            PROFILE_TRANSFORM_SELECTIONS_KEY
-        ]
-        valid_profile_ids = set(llm_profile_options)
-        stale_profile_ids = [
-            profile_key for profile_key in profile_transform_map if profile_key not in valid_profile_ids
-        ]
-        for profile_key in stale_profile_ids:
-            profile_transform_map.pop(profile_key, None)
-
-        previous_selection = profile_transform_map.get(llm_profile_id)
-        if not isinstance(previous_selection, list):
-            previous_selection = []
-
-        active_selector_profile = st.session_state.get(TRANSFORM_SELECTOR_PROFILE_KEY)
-        current_widget_selection = st.session_state.get(SELECTED_TRANSFORM_WIDGET_KEY, [])
-        if not isinstance(current_widget_selection, list):
-            current_widget_selection = []
-
-        if active_selector_profile != llm_profile_id:
-            selected_for_profile = [
-                name for name in previous_selection if name in available_transform_names
-            ]
-            if not selected_for_profile:
-                selected_for_profile = pipeline_service.default_transform_selection(
-                    available_transform_names,
-                    selected_profile,
-                )
-            st.session_state[SELECTED_TRANSFORM_WIDGET_KEY] = selected_for_profile
-            st.session_state[TRANSFORM_SELECTOR_PROFILE_KEY] = llm_profile_id
-        else:
-            filtered_current = [
-                name
-                for name in current_widget_selection
-                if name in available_transform_names
-            ]
-            if filtered_current != current_widget_selection:
-                st.session_state[SELECTED_TRANSFORM_WIDGET_KEY] = filtered_current
+        default_selection = pipeline_service.default_transform_selection(
+            available_transform_names,
+            selected_profile,
+        )
+        profile_state = pipeline_tab_state_service.resolve_profile_transform_state(
+            raw_profile_transform_map=st.session_state.get(
+                PROFILE_TRANSFORM_SELECTIONS_KEY
+            ),
+            valid_profile_ids=llm_profile_options,
+            selected_profile_id=llm_profile_id,
+            active_selector_profile=st.session_state.get(TRANSFORM_SELECTOR_PROFILE_KEY),
+            current_widget_selection=st.session_state.get(
+                SELECTED_TRANSFORM_WIDGET_KEY,
+                [],
+            ),
+            available_transform_names=available_transform_names,
+            default_selection=default_selection,
+        )
+        st.session_state[PROFILE_TRANSFORM_SELECTIONS_KEY] = (
+            profile_state.profile_transform_map
+        )
+        st.session_state[SELECTED_TRANSFORM_WIDGET_KEY] = profile_state.widget_selection
+        st.session_state[TRANSFORM_SELECTOR_PROFILE_KEY] = (
+            profile_state.active_profile_id
+        )
 
         st.subheader("2. Select Transformations")
         if always_included_transform_names:
@@ -230,7 +212,9 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
             options=available_transform_names,
             key=SELECTED_TRANSFORM_WIDGET_KEY,
         )
-        profile_transform_map[llm_profile_id] = selected_transform_names
+        st.session_state[PROFILE_TRANSFORM_SELECTIONS_KEY][
+            llm_profile_id
+        ] = selected_transform_names
 
         if unavailable_transform_reasons:
             hidden_count = len(unavailable_transform_reasons)
@@ -254,7 +238,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
             "Enter words (one per line):",
             height=200,
             help="Enter words, one per line. Maximum 1000 words.",
-            key="pipeline_word_input",
+            key=PIPELINE_SESSION_KEYS.word_input,
         )
 
     st.divider()
@@ -298,8 +282,9 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
                         len(pipeline.main_transformations)
                         + len(pipeline.llm_transformations),
                     )
-                    steps_completed = 0
-                    step_timings = []
+                    progress_tracker = PipelineProgressTracker(
+                        total_transform_steps=total_transform_steps
+                    )
 
                     progress_header = st.empty()
                     progress_status = st.empty()
@@ -307,71 +292,21 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
                     timing_table_placeholder = st.empty()
 
                     def on_pipeline_progress(event):
-                        nonlocal steps_completed
+                        progress_snapshot = progress_tracker.consume_event(event)
+                        if progress_snapshot.header_status == "success":
+                            progress_header.success(progress_snapshot.header_text or "")
+                        elif progress_snapshot.header_status == "info":
+                            progress_header.info(progress_snapshot.header_text or "")
 
-                        event_type = event.get("event")
-                        if event_type == "pipeline_start":
-                            progress_header.info("Pipeline started.")
-                            progress_status.caption(
-                                f"Preparing {event.get('total_words', 0)} words..."
-                            )
-                            progress_bar.progress(0.02)
-                            return
+                        if progress_snapshot.status_text:
+                            progress_status.caption(progress_snapshot.status_text)
 
-                        if event_type == "cache_checked":
-                            progress_status.caption(
-                                "Cache checked: {cached} cached, {new} new words.".format(
-                                    cached=event.get("cached_words", 0),
-                                    new=event.get("new_words", 0),
-                                )
-                            )
-                            progress_bar.progress(0.08)
-                            return
-
-                        if event_type == "transform_start":
-                            progress_status.caption(
-                                "Running {stage}: {name}...".format(
-                                    stage=event.get("stage", "step").upper(),
-                                    name=event.get("transform_name", ""),
-                                )
-                            )
-                            return
-
-                        if event_type == "transform_complete":
-                            steps_completed += 1
-                            duration_seconds = float(event.get("duration_seconds", 0.0))
-                            step_timings.append(
-                                {
-                                    "stage": event.get("stage", ""),
-                                    "step": event.get("transform_name", ""),
-                                    "seconds": round(duration_seconds, 2),
-                                }
-                            )
-                            progress_ratio = min(
-                                0.95, steps_completed / float(total_transform_steps)
-                            )
-                            progress_bar.progress(progress_ratio)
-                            progress_status.caption(
-                                "{name} finished in {seconds:.2f}s".format(
-                                    name=event.get("transform_name", ""),
-                                    seconds=duration_seconds,
-                                )
-                            )
+                        progress_bar.progress(progress_snapshot.progress_ratio)
+                        if progress_snapshot.step_timings:
                             timing_table_placeholder.dataframe(
-                                pd.DataFrame(step_timings),
+                                pd.DataFrame(progress_snapshot.step_timings),
                                 use_container_width=True,
                                 hide_index=True,
-                            )
-                            return
-
-                        if event_type == "pipeline_complete":
-                            progress_bar.progress(1.0)
-                            progress_header.success("Pipeline complete.")
-                            total_duration = float(
-                                event.get("total_duration_seconds", 0.0)
-                            )
-                            progress_status.caption(
-                                f"Total duration: {total_duration:.2f}s"
                             )
 
                     run_result = pipeline_service.execute_pipeline_run(
@@ -382,15 +317,11 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
                         dev_mode=False,
                     )
                     df_results = run_result.df_results
-                    if step_timings:
-                        slowest_steps = (
-                            pd.DataFrame(step_timings)
-                            .sort_values("seconds", ascending=False)
-                            .head(3)
-                        )
+                    slowest_steps = progress_tracker.slowest_steps(limit=3)
+                    if slowest_steps:
                         st.markdown("**Slowest steps**")
                         st.dataframe(
-                            slowest_steps,
+                            pd.DataFrame(slowest_steps),
                             use_container_width=True,
                             hide_index=True,
                         )
@@ -458,35 +389,33 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
             "Enter a category for these words:",
             max_chars=50,
             help="Category name (max 50 characters)",
-            key="pipeline_category_name",
+            key=PIPELINE_SESSION_KEYS.category_name,
         )
 
         if st.button("Add Category to DB", use_container_width=True):
-            if not category_name:
-                st.warning("Please enter a category name.")
-            elif len(category_name.strip()) < 2:
-                st.warning("Category name must be at least 2 characters long.")
-            elif not re.match(r'^[a-zA-Z0-9_\-\s]+$', category_name):
-                st.warning("Category name contains invalid characters. Use only letters, numbers, spaces, hyphens, and underscores.")
-            else:
-                try:
-                    with st.spinner(f"Adding category '{category_name}'..."):
-                        df_categorized = pipeline_service.add_category_to_results(
-                            pipeline_db_client=pipeline_db_client,
-                            df_results=df_results,
-                            category=category_name.strip(),
-                            table_name="hanzi_processing",
-                        )
-
-                    st.success(
-                        f"Category '{category_name}' added to {len(df_categorized)} words!"
+            try:
+                normalized_category = pipeline_service.normalize_category_name(
+                    category_name
+                )
+                with st.spinner(f"Adding category '{normalized_category}'..."):
+                    df_categorized = pipeline_service.add_category_to_results(
+                        pipeline_db_client=pipeline_db_client,
+                        df_results=df_results,
+                        category=normalized_category,
+                        table_name="hanzi_processing",
                     )
 
-                    # Update the dataframe in the UI and state
-                    st.session_state.df_results = df_categorized
-                    st.session_state["app_active_tab"] = "🚀 Run Pipeline"
-                    st.rerun()
+                st.success(
+                    f"Category '{normalized_category}' added to {len(df_categorized)} words!"
+                )
 
-                except Exception as e:
-                    logger.error(f"Error adding category: {e}")
-                    st.error(f"An error occurred while adding category: {e}")
+                # Update the dataframe in the UI and state
+                st.session_state.df_results = df_categorized
+                st.session_state["app_active_tab"] = "🚀 Run Pipeline"
+                st.rerun()
+
+            except ValueError as e:
+                st.warning(str(e))
+            except Exception as e:
+                logger.error(f"Error adding category: {e}")
+                st.error(f"An error occurred while adding category: {e}")

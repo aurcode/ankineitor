@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -45,8 +46,8 @@ class PipelineRunResult:
     saved_results_csv: Path
 
 
-class PipelineRunService:
-    """Coordinates transform selection, pipeline execution, and result persistence."""
+class TransformSelectionService:
+    """Owns transform filtering, defaults, and selection validation rules."""
 
     @staticmethod
     def _get_unavailable_transform_reason(
@@ -165,6 +166,10 @@ class PipelineRunService:
             )
         return None
 
+
+class PipelinePreparationService:
+    """Builds a concrete runtime pipeline from selected transform names."""
+
     def prepare_pipeline_run(
         self,
         *,
@@ -210,44 +215,6 @@ class PipelineRunService:
             selected_transforms=selected_transforms,
             pipeline=pipeline,
         )
-
-    def execute_pipeline_run(
-        self,
-        *,
-        prepared_run: PreparedPipelineRun,
-        words: List[str],
-        llm_profile_id: str,
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-        dev_mode: bool = False,
-    ) -> PipelineRunResult:
-        df_results = prepared_run.pipeline.transform_data_with_progress(
-            words=words,
-            dev_mode=dev_mode,
-            progress_callback=progress_callback,
-        )
-        saved_results_csv = save_pipeline_results_csv(
-            df_results=df_results,
-            profile_id=llm_profile_id,
-        )
-        return PipelineRunResult(
-            df_results=df_results,
-            saved_results_csv=saved_results_csv,
-        )
-
-    def add_category_to_results(
-        self,
-        *,
-        pipeline_db_client: Any,
-        df_results: pd.DataFrame,
-        category: str,
-        table_name: str = "hanzi_processing",
-    ) -> pd.DataFrame:
-        pipeline = TransformationPipeline(
-            db_client=pipeline_db_client,
-            transformations=[],
-            table_name=table_name,
-        )
-        return pipeline.transform_categories(df_results, category=category)
 
     @staticmethod
     def _build_runtime_transformations(
@@ -296,3 +263,220 @@ class PipelineRunService:
                 transform.profile = get_llm_profile(llm_profile_id)
             if isinstance(transform, LLMAudioTransformation):
                 transform.profile_id = llm_profile_id
+
+
+class PipelineExecutionService:
+    """Executes a prepared pipeline and persists run artifacts."""
+
+    def execute_pipeline_run(
+        self,
+        *,
+        prepared_run: PreparedPipelineRun,
+        words: List[str],
+        llm_profile_id: str,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        dev_mode: bool = False,
+    ) -> PipelineRunResult:
+        df_results = prepared_run.pipeline.transform_data_with_progress(
+            words=words,
+            dev_mode=dev_mode,
+            progress_callback=progress_callback,
+        )
+        saved_results_csv = save_pipeline_results_csv(
+            df_results=df_results,
+            profile_id=llm_profile_id,
+        )
+        return PipelineRunResult(
+            df_results=df_results,
+            saved_results_csv=saved_results_csv,
+        )
+
+
+class CategoryService:
+    """Validates and applies category updates for pipeline results."""
+
+    _CATEGORY_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\s]+$")
+
+    @classmethod
+    def normalize_category_name(cls, category: str) -> str:
+        normalized = str(category or "").strip()
+        if not normalized:
+            raise ValueError("Please enter a category name.")
+        if len(normalized) < 2:
+            raise ValueError("Category name must be at least 2 characters long.")
+        if not cls._CATEGORY_NAME_PATTERN.fullmatch(normalized):
+            raise ValueError(
+                "Category name contains invalid characters. "
+                "Use only letters, numbers, spaces, hyphens, and underscores."
+            )
+        return normalized
+
+    def add_category_to_results(
+        self,
+        *,
+        pipeline_db_client: Any,
+        df_results: pd.DataFrame,
+        category: str,
+        table_name: str = "hanzi_processing",
+    ) -> pd.DataFrame:
+        normalized_category = self.normalize_category_name(category)
+        pipeline = TransformationPipeline(
+            db_client=pipeline_db_client,
+            transformations=[],
+            table_name=table_name,
+        )
+        return pipeline.transform_categories(df_results, category=normalized_category)
+
+
+class PipelineRunService:
+    """Facade that coordinates pipeline selection, build, execution, and categories."""
+
+    def __init__(
+        self,
+        *,
+        transform_selection_service: Optional[TransformSelectionService] = None,
+        pipeline_preparation_service: Optional[PipelinePreparationService] = None,
+        pipeline_execution_service: Optional[PipelineExecutionService] = None,
+        category_service: Optional[CategoryService] = None,
+    ):
+        self.transform_selection_service = (
+            transform_selection_service or TransformSelectionService()
+        )
+        self.pipeline_preparation_service = (
+            pipeline_preparation_service or PipelinePreparationService()
+        )
+        self.pipeline_execution_service = (
+            pipeline_execution_service or PipelineExecutionService()
+        )
+        self.category_service = category_service or CategoryService()
+
+    def resolve_transform_options_for_profile(
+        self,
+        all_transformations: Dict[str, object],
+        selected_profile: LLMProfile,
+    ) -> TransformOptions:
+        return self.transform_selection_service.resolve_transform_options_for_profile(
+            all_transformations=all_transformations,
+            selected_profile=selected_profile,
+        )
+
+    def default_transform_selection(
+        self,
+        available_transform_names: List[str],
+        selected_profile: LLMProfile,
+    ) -> List[str]:
+        return self.transform_selection_service.default_transform_selection(
+            available_transform_names=available_transform_names,
+            selected_profile=selected_profile,
+        )
+
+    def build_ordered_transform_names(
+        self,
+        all_transformations: Dict[str, object],
+        always_included_transform_names: List[str],
+        selected_transform_names: List[str],
+    ) -> List[str]:
+        return self.transform_selection_service.build_ordered_transform_names(
+            all_transformations=all_transformations,
+            always_included_transform_names=always_included_transform_names,
+            selected_transform_names=selected_transform_names,
+        )
+
+    def validate_transform_run_selection(
+        self,
+        *,
+        all_transformations: Dict[str, object],
+        ordered_transform_names: List[str],
+        selected_profile: LLMProfile,
+    ) -> Optional[str]:
+        return self.transform_selection_service.validate_transform_run_selection(
+            all_transformations=all_transformations,
+            ordered_transform_names=ordered_transform_names,
+            selected_profile=selected_profile,
+        )
+
+    def prepare_pipeline_run(
+        self,
+        *,
+        pipeline_db_client: Any,
+        all_transformations: Dict[str, object],
+        ordered_transform_names: List[str],
+        llm_profile_id: str,
+        llm_source_language: str,
+        transform_factory: Optional[Callable[..., Dict[str, object]]] = None,
+        table_name: str = "hanzi_processing",
+    ) -> PreparedPipelineRun:
+        return self.pipeline_preparation_service.prepare_pipeline_run(
+            pipeline_db_client=pipeline_db_client,
+            all_transformations=all_transformations,
+            ordered_transform_names=ordered_transform_names,
+            llm_profile_id=llm_profile_id,
+            llm_source_language=llm_source_language,
+            transform_factory=transform_factory,
+            table_name=table_name,
+        )
+
+    def execute_pipeline_run(
+        self,
+        *,
+        prepared_run: PreparedPipelineRun,
+        words: List[str],
+        llm_profile_id: str,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        dev_mode: bool = False,
+    ) -> PipelineRunResult:
+        return self.pipeline_execution_service.execute_pipeline_run(
+            prepared_run=prepared_run,
+            words=words,
+            llm_profile_id=llm_profile_id,
+            progress_callback=progress_callback,
+            dev_mode=dev_mode,
+        )
+
+    @classmethod
+    def normalize_category_name(cls, category: str) -> str:
+        del cls
+        return CategoryService.normalize_category_name(category)
+
+    def add_category_to_results(
+        self,
+        *,
+        pipeline_db_client: Any,
+        df_results: pd.DataFrame,
+        category: str,
+        table_name: str = "hanzi_processing",
+    ) -> pd.DataFrame:
+        return self.category_service.add_category_to_results(
+            pipeline_db_client=pipeline_db_client,
+            df_results=df_results,
+            category=category,
+            table_name=table_name,
+        )
+
+    @staticmethod
+    def _build_runtime_transformations(
+        *,
+        all_transformations: Dict[str, object],
+        transform_factory: Optional[Callable[..., Dict[str, object]]],
+        llm_profile_id: str,
+        llm_source_language: str,
+    ) -> tuple[Dict[str, object], bool]:
+        return PipelinePreparationService._build_runtime_transformations(
+            all_transformations=all_transformations,
+            transform_factory=transform_factory,
+            llm_profile_id=llm_profile_id,
+            llm_source_language=llm_source_language,
+        )
+
+    @staticmethod
+    def _apply_legacy_runtime_configuration(
+        *,
+        selected_transforms: List[object],
+        llm_profile_id: str,
+        llm_source_language: str,
+    ) -> None:
+        PipelinePreparationService._apply_legacy_runtime_configuration(
+            selected_transforms=selected_transforms,
+            llm_profile_id=llm_profile_id,
+            llm_source_language=llm_source_language,
+        )
