@@ -11,6 +11,11 @@ class RunStatus(models.TextChoices):
     ERROR = "error", "Error"
 
 
+class FlashcardDatasetSourceType(models.TextChoices):
+    SAVED = "saved", "Saved Pipeline CSV"
+    UPLOAD = "upload", "Uploaded CSV"
+
+
 class PipelineRun(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     status = models.CharField(
@@ -73,3 +78,31 @@ class PipelineResultRow(models.Model):
     class Meta:
         ordering = ["row_index"]
         unique_together = ("run", "row_index")
+
+
+class GeneratedAnkiDeck(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    deck_name = models.CharField(max_length=160)
+    source_csv_name = models.CharField(max_length=255)
+    output_path = models.TextField()
+    file_size_bytes = models.PositiveBigIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class FlashcardDataset(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_type = models.CharField(
+        max_length=12,
+        choices=FlashcardDatasetSourceType.choices,
+    )
+    source_label = models.CharField(max_length=255)
+    csv_path = models.TextField()
+    total_cards = models.PositiveIntegerField(default=0)
+    columns = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]

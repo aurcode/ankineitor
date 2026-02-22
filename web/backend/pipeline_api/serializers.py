@@ -94,3 +94,29 @@ class PipelineResultRowSerializer(serializers.ModelSerializer):
 
 class AddCategorySerializer(serializers.Serializer):
     category = serializers.CharField(max_length=50)
+
+
+class AnkiDeckGenerateSerializer(serializers.Serializer):
+    deck_name = serializers.CharField(max_length=120)
+    config = serializers.JSONField()
+
+
+class FlashcardDatasetFromSavedSerializer(serializers.Serializer):
+    profile_id = serializers.CharField(max_length=128)
+    file_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+
+class FlashcardCardQuerySerializer(serializers.Serializer):
+    index = serializers.IntegerField(min_value=0, required=False, default=0)
+    profile_filter = serializers.CharField(max_length=128, required=False, allow_blank=True)
+
+
+class WordExtractorAnalyzeSerializer(serializers.Serializer):
+    text_input = serializers.CharField(required=False, allow_blank=True, default="")
+    selected_hsk_levels = serializers.ListField(
+        child=serializers.CharField(max_length=16),
+        required=False,
+        allow_empty=True,
+        default=list,
+    )
+    min_frequency = serializers.IntegerField(min_value=1, required=False, default=2)
