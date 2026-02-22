@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 import pandas as pd
+from django.contrib.auth import get_user_model
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
 
 # Ensure tests can import the local package without requiring PYTHONPATH.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -170,3 +173,15 @@ def malformed_csv_content():
 谢谢,xiè xiè,"thank
 you"
 苹果,píng guǒ,apple"""
+
+
+@pytest.fixture
+def authenticated_api_client(db):
+    user = get_user_model().objects.create_user(
+        username="api-user",
+        password="api-password",
+    )
+    token = Token.objects.create(user=user)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+    return client, user, token

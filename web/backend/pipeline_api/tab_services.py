@@ -6,7 +6,6 @@ import json
 import re
 import sys
 import tempfile
-from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -14,7 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import yaml
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 
 from ankineitor.common.pipeline_result_store import (
     list_saved_csv_files_for_profile,
@@ -25,6 +28,10 @@ from ankineitor.security import sanitize_filename, validate_file_upload
 from ankineitor.security.exceptions import InvalidFileError, ValidationError
 
 from .models import (
+    BackgroundJob,
+    BackgroundJobEvent,
+    BackgroundJobStatus,
+    BackgroundJobType,
     FlashcardDataset,
     FlashcardDatasetSourceType,
     GeneratedAnkiDeck,
@@ -34,6 +41,7 @@ from .models import (
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ALLOWED_WORD_EXTRACTOR_EXTENSIONS = [".pdf", ".docx", ".txt", ".pptx"]
 SAFE_DECK_NAME_PATTERN = re.compile(r"^[A-Za-z0-9 _\-]{2,120}$")
+JOB_GROUP_PREFIX = "background_job_"
 
 
 def _safe_text(value: Any) -> str:
@@ -223,6 +231,7 @@ def _sanitize_deck_name(raw_name: str) -> str:
 
 def generate_anki_deck_artifact(
     *,
+    owner,
     csv_name: str,
     csv_bytes: bytes,
     deck_name: str,
@@ -281,6 +290,7 @@ def generate_anki_deck_artifact(
             relative_deck_path = deck_path.as_posix()
 
         return GeneratedAnkiDeck.objects.create(
+            owner=owner,
             deck_name=resolved_deck_name,
             source_csv_name=safe_csv_name,
             output_path=relative_deck_path,
@@ -386,6 +396,7 @@ def _dataset_summary_payload(dataset: FlashcardDataset, df: pd.DataFrame) -> Dic
 
 def create_flashcard_dataset_from_saved(
     *,
+    owner,
     profile_id: str,
     file_name: Optional[str],
 ) -> Dict[str, Any]:
@@ -416,6 +427,7 @@ def create_flashcard_dataset_from_saved(
         csv_relative = selected_path.as_posix()
 
     dataset = FlashcardDataset.objects.create(
+        owner=owner,
         source_type=FlashcardDatasetSourceType.SAVED,
         source_label=f"{profile_id}:{selected_path.name}",
         csv_path=csv_relative,
@@ -425,7 +437,7 @@ def create_flashcard_dataset_from_saved(
     return _dataset_summary_payload(dataset, df)
 
 
-def create_flashcard_dataset_from_upload(*, file_name: str, file_bytes: bytes) -> Dict[str, Any]:
+def create_flashcard_dataset_from_upload(*, owner, file_name: str, file_bytes: bytes) -> Dict[str, Any]:
     safe_name = sanitize_filename(file_name)
     validate_file_upload(_UploadProxy(safe_name, file_bytes), expected_extensions=[".csv"])
 
@@ -437,6 +449,7 @@ def create_flashcard_dataset_from_upload(*, file_name: str, file_bytes: bytes) -
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     dataset_id = FlashcardDataset.objects.create(
+        owner=owner,
         source_type=FlashcardDatasetSourceType.UPLOAD,
         source_label=safe_name,
         csv_path="pending",
@@ -462,8 +475,8 @@ def create_flashcard_dataset_from_upload(*, file_name: str, file_bytes: bytes) -
     return _dataset_summary_payload(dataset, df)
 
 
-def get_flashcard_dataset_summary(dataset_id: str) -> Dict[str, Any]:
-    dataset = FlashcardDataset.objects.get(pk=dataset_id)
+def get_flashcard_dataset_summary(dataset_id: str, owner) -> Dict[str, Any]:
+    dataset = FlashcardDataset.objects.get(pk=dataset_id, owner=owner)
     df = _load_dataset_dataframe(dataset)
     return _dataset_summary_payload(dataset, df)
 
@@ -704,10 +717,11 @@ def _build_flashcard_card_payload(row: pd.Series, index: int, total: int) -> Dic
 def get_flashcard_card(
     *,
     dataset_id: str,
+    owner,
     index: int,
     profile_filter: Optional[str],
 ) -> Dict[str, Any]:
-    dataset = FlashcardDataset.objects.get(pk=dataset_id)
+    dataset = FlashcardDataset.objects.get(pk=dataset_id, owner=owner)
     df = _load_dataset_dataframe(dataset)
 
     normalized_filter = _safe_text(profile_filter)
@@ -879,3 +893,339 @@ def analyze_word_extractor(
             "applied_hsk_levels": normalized_levels,
         },
     }
+
+
+def job_group_name(job_id: str) -> str:
+    return f"{JOB_GROUP_PREFIX}{job_id}"
+
+
+def serialize_background_job(job: BackgroundJob) -> Dict[str, Any]:
+    return {
+        "id": str(job.id),
+        "job_type": job.job_type,
+        "status": job.status,
+        "result_payload": dict(job.result_payload or {}),
+        "error_message": job.error_message,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+
+
+def serialize_background_job_event(event: BackgroundJobEvent) -> Dict[str, Any]:
+    payload = dict(event.payload or {})
+    payload.setdefault("event", event.event_type)
+    return {
+        "id": event.id,
+        "job_id": str(event.job_id),
+        "sequence": event.sequence,
+        "created_at": event.created_at.isoformat(),
+        "payload": payload,
+    }
+
+
+def record_background_job_event(job_id: str, payload: Dict[str, Any]) -> BackgroundJobEvent:
+    normalized_payload = dict(payload or {})
+    event_type = str(normalized_payload.get("event", "unknown"))
+
+    with transaction.atomic():
+        job = BackgroundJob.objects.select_for_update().get(pk=job_id)
+        sequence = int(job.last_event_sequence or 0) + 1
+        job.last_event_sequence = sequence
+        job.save(update_fields=["last_event_sequence", "updated_at"])
+        event = BackgroundJobEvent.objects.create(
+            job=job,
+            sequence=sequence,
+            event_type=event_type,
+            payload=normalized_payload,
+        )
+
+    channel_layer = get_channel_layer()
+    if channel_layer is not None:
+        outbound = serialize_background_job_event(event)
+        async_to_sync(channel_layer.group_send)(
+            job_group_name(str(job_id)),
+            {
+                "type": "background.job.event",
+                "payload": outbound,
+            },
+        )
+    return event
+
+
+def _store_background_input_file(job_id: str, file_name: str, file_bytes: bytes) -> str:
+    safe_name = sanitize_filename(file_name)
+    target_dir = Path(settings.MEDIA_ROOT) / "job_inputs" / str(job_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / safe_name
+    target_path.write_bytes(file_bytes)
+
+    try:
+        return str(target_path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except Exception:
+        return target_path.as_posix()
+
+
+def _resolve_workspace_path(path_value: str) -> Path:
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    resolved = path.resolve()
+    if PROJECT_ROOT.resolve() not in resolved.parents:
+        raise ValueError("Path is outside workspace.")
+    return resolved
+
+
+def create_anki_background_job(
+    *,
+    owner,
+    csv_name: str,
+    csv_bytes: bytes,
+    deck_name: str,
+    config_payload: Dict[str, Any],
+) -> BackgroundJob:
+    safe_name = sanitize_filename(csv_name)
+    validate_file_upload(_UploadProxy(safe_name, csv_bytes), expected_extensions=[".csv"])
+    resolved_deck_name = _sanitize_deck_name(deck_name)
+
+    job = BackgroundJob.objects.create(
+        owner=owner,
+        job_type=BackgroundJobType.ANKI_DECK,
+        status=BackgroundJobStatus.QUEUED,
+        input_payload={},
+    )
+
+    csv_path = _store_background_input_file(str(job.id), safe_name, csv_bytes)
+    job.input_payload = {
+        "csv_name": safe_name,
+        "csv_path": csv_path,
+        "deck_name": resolved_deck_name,
+        "config": dict(config_payload or {}),
+    }
+    job.save(update_fields=["input_payload", "updated_at"])
+    record_background_job_event(
+        str(job.id),
+        {
+            "event": "job_queued",
+            "job_type": job.job_type,
+            "csv_name": safe_name,
+            "deck_name": resolved_deck_name,
+        },
+    )
+    return job
+
+
+def create_word_extractor_background_job(
+    *,
+    owner,
+    uploaded_files: List[Tuple[str, bytes]],
+    text_input: str,
+    selected_hsk_levels: List[str],
+    min_frequency: int,
+) -> BackgroundJob:
+    normalized_levels = [str(level).strip().lower() for level in selected_hsk_levels if str(level).strip()]
+    safe_min_frequency = max(1, int(min_frequency or 1))
+
+    if not uploaded_files and not _safe_text(text_input):
+        raise ValueError("Upload at least one file or provide pasted text.")
+
+    job = BackgroundJob.objects.create(
+        owner=owner,
+        job_type=BackgroundJobType.WORD_EXTRACTOR,
+        status=BackgroundJobStatus.QUEUED,
+        input_payload={},
+    )
+
+    stored_files: List[Dict[str, str]] = []
+    for file_name, file_bytes in uploaded_files:
+        safe_name = sanitize_filename(file_name)
+        validate_file_upload(
+            _UploadProxy(safe_name, file_bytes),
+            expected_extensions=ALLOWED_WORD_EXTRACTOR_EXTENSIONS,
+        )
+        file_path = _store_background_input_file(str(job.id), safe_name, file_bytes)
+        stored_files.append({"name": safe_name, "path": file_path})
+
+    job.input_payload = {
+        "files": stored_files,
+        "text_input": _safe_text(text_input),
+        "selected_hsk_levels": normalized_levels,
+        "min_frequency": safe_min_frequency,
+    }
+    job.save(update_fields=["input_payload", "updated_at"])
+    record_background_job_event(
+        str(job.id),
+        {
+            "event": "job_queued",
+            "job_type": job.job_type,
+            "file_count": len(stored_files),
+            "has_text_input": bool(_safe_text(text_input)),
+            "min_frequency": safe_min_frequency,
+            "selected_hsk_levels": normalized_levels,
+        },
+    )
+    return job
+
+
+def run_anki_background_job(job_id: str) -> None:
+    job = BackgroundJob.objects.get(pk=job_id, job_type=BackgroundJobType.ANKI_DECK)
+    job.status = BackgroundJobStatus.RUNNING
+    job.started_at = timezone.now()
+    job.completed_at = None
+    job.error_message = ""
+    job.result_payload = {}
+    job.last_event_sequence = 0
+    job.save(
+        update_fields=[
+            "status",
+            "started_at",
+            "completed_at",
+            "error_message",
+            "result_payload",
+            "last_event_sequence",
+            "updated_at",
+        ]
+    )
+    BackgroundJobEvent.objects.filter(job=job).delete()
+    record_background_job_event(str(job.id), {"event": "job_start", "job_type": job.job_type})
+
+    try:
+        payload = dict(job.input_payload or {})
+        csv_path = _resolve_workspace_path(str(payload.get("csv_path", "")))
+        csv_bytes = csv_path.read_bytes()
+        record_background_job_event(
+            str(job.id),
+            {
+                "event": "input_loaded",
+                "csv_name": str(payload.get("csv_name", "")),
+                "bytes": len(csv_bytes),
+            },
+        )
+
+        artifact = generate_anki_deck_artifact(
+            owner=job.owner,
+            csv_name=str(payload.get("csv_name", "cards.csv")),
+            csv_bytes=csv_bytes,
+            deck_name=str(payload.get("deck_name", "My Anki Deck")),
+            config_payload=dict(payload.get("config") or {}),
+        )
+        result_payload = {
+            "artifact_id": str(artifact.id),
+            "deck_name": artifact.deck_name,
+            "source_csv_name": artifact.source_csv_name,
+            "file_size_bytes": artifact.file_size_bytes,
+            "output_path": artifact.output_path,
+            "created_at": artifact.created_at.isoformat(),
+        }
+
+        job.status = BackgroundJobStatus.SUCCESS
+        job.completed_at = timezone.now()
+        job.result_payload = result_payload
+        job.save(update_fields=["status", "completed_at", "result_payload", "updated_at"])
+        record_background_job_event(
+            str(job.id),
+            {
+                "event": "job_complete",
+                "job_type": job.job_type,
+                "result": result_payload,
+            },
+        )
+    except Exception as exc:
+        job.status = BackgroundJobStatus.ERROR
+        job.completed_at = timezone.now()
+        job.error_message = str(exc)
+        job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+        record_background_job_event(
+            str(job.id),
+            {
+                "event": "job_error",
+                "job_type": job.job_type,
+                "error": str(exc),
+            },
+        )
+        raise
+
+
+def run_word_extractor_background_job(job_id: str) -> None:
+    job = BackgroundJob.objects.get(pk=job_id, job_type=BackgroundJobType.WORD_EXTRACTOR)
+    job.status = BackgroundJobStatus.RUNNING
+    job.started_at = timezone.now()
+    job.completed_at = None
+    job.error_message = ""
+    job.result_payload = {}
+    job.last_event_sequence = 0
+    job.save(
+        update_fields=[
+            "status",
+            "started_at",
+            "completed_at",
+            "error_message",
+            "result_payload",
+            "last_event_sequence",
+            "updated_at",
+        ]
+    )
+    BackgroundJobEvent.objects.filter(job=job).delete()
+    record_background_job_event(str(job.id), {"event": "job_start", "job_type": job.job_type})
+
+    try:
+        payload = dict(job.input_payload or {})
+        uploaded_files: List[Tuple[str, bytes]] = []
+        for file_row in payload.get("files") or []:
+            if not isinstance(file_row, dict):
+                continue
+            name = str(file_row.get("name", "")).strip()
+            file_path = _resolve_workspace_path(str(file_row.get("path", "")))
+            uploaded_files.append((name or file_path.name, file_path.read_bytes()))
+
+        record_background_job_event(
+            str(job.id),
+            {
+                "event": "input_loaded",
+                "file_count": len(uploaded_files),
+                "has_text_input": bool(_safe_text(payload.get("text_input"))),
+            },
+        )
+
+        result = analyze_word_extractor(
+            uploaded_files=uploaded_files,
+            text_input=str(payload.get("text_input", "")),
+            selected_hsk_levels=list(payload.get("selected_hsk_levels") or []),
+            min_frequency=int(payload.get("min_frequency", 2) or 2),
+        )
+        job.status = BackgroundJobStatus.SUCCESS
+        job.completed_at = timezone.now()
+        job.result_payload = result
+        job.save(update_fields=["status", "completed_at", "result_payload", "updated_at"])
+        record_background_job_event(
+            str(job.id),
+            {
+                "event": "job_complete",
+                "job_type": job.job_type,
+                "summary": dict(result.get("summary") or {}),
+            },
+        )
+    except Exception as exc:
+        job.status = BackgroundJobStatus.ERROR
+        job.completed_at = timezone.now()
+        job.error_message = str(exc)
+        job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+        record_background_job_event(
+            str(job.id),
+            {
+                "event": "job_error",
+                "job_type": job.job_type,
+                "error": str(exc),
+            },
+        )
+        raise
+
+
+def get_background_job_for_owner(*, owner, job_id: str) -> BackgroundJob:
+    return BackgroundJob.objects.get(pk=job_id, owner=owner)
+
+
+def get_background_job_events_for_owner(*, owner, job_id: str) -> List[Dict[str, Any]]:
+    job = get_background_job_for_owner(owner=owner, job_id=job_id)
+    events = BackgroundJobEvent.objects.filter(job=job).order_by("sequence")
+    return [serialize_background_job_event(event) for event in events]

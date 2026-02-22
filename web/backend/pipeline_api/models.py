@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 
@@ -18,6 +19,13 @@ class FlashcardDatasetSourceType(models.TextChoices):
 
 class PipelineRun(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="pipeline_runs",
+        null=True,
+        blank=True,
+    )
     status = models.CharField(
         max_length=16,
         choices=RunStatus.choices,
@@ -82,6 +90,13 @@ class PipelineResultRow(models.Model):
 
 class GeneratedAnkiDeck(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="generated_anki_decks",
+        null=True,
+        blank=True,
+    )
     deck_name = models.CharField(max_length=160)
     source_csv_name = models.CharField(max_length=255)
     output_path = models.TextField()
@@ -94,6 +109,13 @@ class GeneratedAnkiDeck(models.Model):
 
 class FlashcardDataset(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="flashcard_datasets",
+        null=True,
+        blank=True,
+    )
     source_type = models.CharField(
         max_length=12,
         choices=FlashcardDatasetSourceType.choices,
@@ -106,3 +128,58 @@ class FlashcardDataset(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class BackgroundJobType(models.TextChoices):
+    ANKI_DECK = "anki_deck", "Anki Deck"
+    WORD_EXTRACTOR = "word_extractor", "Word Extractor"
+
+
+class BackgroundJobStatus(models.TextChoices):
+    QUEUED = "queued", "Queued"
+    RUNNING = "running", "Running"
+    SUCCESS = "success", "Success"
+    ERROR = "error", "Error"
+
+
+class BackgroundJob(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="background_jobs",
+    )
+    job_type = models.CharField(max_length=32, choices=BackgroundJobType.choices)
+    status = models.CharField(
+        max_length=16,
+        choices=BackgroundJobStatus.choices,
+        default=BackgroundJobStatus.QUEUED,
+    )
+    input_payload = models.JSONField(default=dict)
+    result_payload = models.JSONField(default=dict)
+    error_message = models.TextField(blank=True)
+    celery_task_id = models.CharField(max_length=128, blank=True)
+    last_event_sequence = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class BackgroundJobEvent(models.Model):
+    job = models.ForeignKey(
+        BackgroundJob,
+        on_delete=models.CASCADE,
+        related_name="events",
+    )
+    sequence = models.PositiveIntegerField()
+    event_type = models.CharField(max_length=64)
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sequence"]
+        unique_together = ("job", "sequence")

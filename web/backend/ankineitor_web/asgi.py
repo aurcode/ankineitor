@@ -2,7 +2,6 @@ import os
 import sys
 from pathlib import Path
 
-from channels.auth import AuthMiddlewareStack
 from channels.routing import ProtocolTypeRouter, URLRouter
 from django.core.asgi import get_asgi_application
 
@@ -16,10 +15,11 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "ankineitor_web.settings")
 django_asgi_app = get_asgi_application()
 
 from pipeline_api.routing import websocket_urlpatterns
+from pipeline_api.ws_auth import TokenAuthMiddlewareStack
 
 application = ProtocolTypeRouter(
     {
         "http": django_asgi_app,
-        "websocket": AuthMiddlewareStack(URLRouter(websocket_urlpatterns)),
+        "websocket": TokenAuthMiddlewareStack(URLRouter(websocket_urlpatterns)),
     }
 )

@@ -4,6 +4,9 @@ from .views import (
     AnkiDeckDownloadView,
     AnkiDeckGenerateView,
     AnkiPresetsView,
+    AuthTokenView,
+    BackgroundJobDetailView,
+    BackgroundJobEventsView,
     FlashcardDatasetCardView,
     FlashcardDatasetFromSavedView,
     FlashcardDatasetSummaryView,
@@ -20,6 +23,7 @@ from .views import (
 )
 
 urlpatterns = [
+    re_path(r"^auth/token/?$", AuthTokenView.as_view(), name="auth-token"),
     re_path(r"^pipeline/options/?$", PipelineOptionsView.as_view(), name="pipeline-options"),
     re_path(r"^pipeline/runs/?$", PipelineRunCreateView.as_view(), name="pipeline-run-create"),
     re_path(r"^pipeline/runs/(?P<run_id>[0-9a-fA-F-]+)/?$", PipelineRunDetailView.as_view(), name="pipeline-run-detail"),
@@ -79,5 +83,15 @@ urlpatterns = [
         r"^word-extractor/analyze/?$",
         WordExtractorAnalyzeView.as_view(),
         name="word-extractor-analyze",
+    ),
+    re_path(
+        r"^jobs/(?P<job_id>[0-9a-fA-F-]+)/?$",
+        BackgroundJobDetailView.as_view(),
+        name="background-job-detail",
+    ),
+    re_path(
+        r"^jobs/(?P<job_id>[0-9a-fA-F-]+)/events/?$",
+        BackgroundJobEventsView.as_view(),
+        name="background-job-events",
     ),
 ]

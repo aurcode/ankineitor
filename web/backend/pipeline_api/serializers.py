@@ -8,7 +8,7 @@ from ankineitor.pipeline.llm_profiles import DEFAULT_LLM_PROFILE_ID, get_llm_pro
 from ankineitor.security import ValidationError as InputValidationError
 from ankineitor.security import validate_word_input
 
-from .models import PipelineResultRow, PipelineRun, PipelineRunEvent
+from .models import BackgroundJob, BackgroundJobEvent, PipelineResultRow, PipelineRun, PipelineRunEvent
 
 
 class PipelineRunCreateSerializer(serializers.Serializer):
@@ -92,8 +92,43 @@ class PipelineResultRowSerializer(serializers.ModelSerializer):
         fields = ["row_index", "word", "row_data"]
 
 
+class BackgroundJobSummarySerializer(serializers.ModelSerializer):
+    id = serializers.UUIDField(format="hex_verbose")
+
+    class Meta:
+        model = BackgroundJob
+        fields = [
+            "id",
+            "job_type",
+            "status",
+            "result_payload",
+            "error_message",
+            "created_at",
+            "started_at",
+            "completed_at",
+        ]
+
+
+class BackgroundJobEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BackgroundJobEvent
+        fields = [
+            "id",
+            "job",
+            "sequence",
+            "event_type",
+            "payload",
+            "created_at",
+        ]
+
+
 class AddCategorySerializer(serializers.Serializer):
     category = serializers.CharField(max_length=50)
+
+
+class AuthTokenRequestSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(max_length=128, trim_whitespace=False)
 
 
 class AnkiDeckGenerateSerializer(serializers.Serializer):
