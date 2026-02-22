@@ -50,16 +50,49 @@ The project is structured as a data processing pipeline with a web interface.
     ```bash
     docker-compose up --build
     ```
-    This will build the Docker image and start the Streamlit application.
+This will build the Docker image and start the Streamlit application.
 
 3.  **Access the application:**
-    Open your web browser and navigate to `http://localhost:8502`.
+Open your web browser and navigate to `http://localhost:8502`.
+
+### New Django + React Pipeline UI (Incremental Migration)
+
+The repository now includes a migration path that keeps Streamlit running while introducing:
+- Django + DRF API for pipeline runs/results/category updates
+- Django Channels websocket stream for live progress events
+- Celery + Redis background execution for long-running runs
+- React + TypeScript + React Flow UI for live graph visualization
+
+Run all services:
+
+```bash
+docker-compose up --build app backend worker redis frontend
+```
+
+Service URLs:
+- Streamlit (legacy): `http://localhost:8502`
+- React pipeline UI: `http://localhost:5173`
+- Django API: `http://localhost:8000`
+
+Pipeline API endpoints:
+- `POST /api/pipeline/runs`
+- `GET /api/pipeline/runs/{id}`
+- `GET /api/pipeline/runs/{id}/results`
+- `POST /api/pipeline/runs/{id}/add-category`
+- `WS /ws/pipeline/runs/{id}`
 
 ### Run Tests Locally
 
 ```bash
 pip install -r requirements.txt -r test_requirements.txt
 pytest
+```
+
+Targeted migration tests:
+
+```bash
+pytest tests/test_web_pipeline_api.py tests/test_web_pipeline_ws.py
+cd web/frontend && npm install && npm test
 ```
 
 ### Usage

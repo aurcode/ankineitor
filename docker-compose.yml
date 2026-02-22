@@ -8,7 +8,7 @@ services:
     ports:
       - "8502:8501"
     volumes:
-      - ./data:/app/data # persists both SQLite DBs in /app/data
+      - ./data:/app/data
       - ./media:/app/media
       - ./output:/app/output
       - ./logs:/app/logs
@@ -17,6 +17,82 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    networks:
+      - internal_network
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - internal_network
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    env_file:
+      - ./.env
+    command: >-
+      sh -c "python web/backend/manage.py migrate
+      && daphne -b 0.0.0.0 -p 8000 ankineitor_web.asgi:application"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./media:/app/media
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./my_audio_files:/app/my_audio_files
+      - ./my_image_files:/app/my_image_files
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/0
+      - DJANGO_DB_PATH=data/ankineitor_web.db
+      - PYTHONPATH=/app/src:/app/web/backend
+    depends_on:
+      - redis
+    networks:
+      - internal_network
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    env_file:
+      - ./.env
+    command: >-
+      sh -c "celery -A ankineitor_web worker --loglevel=info --concurrency=1"
+    volumes:
+      - ./data:/app/data
+      - ./media:/app/media
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./my_audio_files:/app/my_audio_files
+      - ./my_image_files:/app/my_image_files
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_URL=redis://redis:6379/0
+      - DJANGO_DB_PATH=data/ankineitor_web.db
+      - PYTHONPATH=/app/src:/app/web/backend
+    depends_on:
+      - redis
+      - backend
+    networks:
+      - internal_network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=
+      - VITE_WS_BASE_URL=
+    depends_on:
+      - backend
     networks:
       - internal_network
 
@@ -30,6 +106,8 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
       - caddy_config:/config
+    depends_on:
+      - app
     networks:
       - internal_network
 

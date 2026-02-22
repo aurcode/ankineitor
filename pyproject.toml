@@ -9,7 +9,14 @@ description = "A data processing pipeline and Streamlit UI for Anki cards."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "celery",
+    "channels",
+    "channels-redis",
     "deep-translator",
+    "Django>=4.2,<5.0",
+    "django-cors-headers",
+    "djangorestframework",
+    "daphne",
     "genanki",
     "google-auth",
     "google-genai",
@@ -26,6 +33,7 @@ dependencies = [
     "PyYAML",
     "python-dotenv",
     "pytesseract",
+    "redis",
     "sqlalchemy",
     "streamlit",
     "tabulate",

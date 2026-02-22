@@ -21,3 +21,12 @@ google-genai
 google-auth
 python-dotenv
 tenacity
+Django>=4.2,<5.0
+djangorestframework
+channels
+channels-redis
+django-cors-headers
+celery
+redis
+daphne
+pytest-django
