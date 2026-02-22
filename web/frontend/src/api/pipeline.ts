@@ -7,6 +7,7 @@ import {
   BackgroundJobCreateResponse,
   BackgroundJobDetailResponse,
   BackgroundJobEventsResponse,
+  BackgroundJobListResponse,
   CreateRunRequest,
   FlashcardCardResponse,
   FlashcardDatasetSummary,
@@ -241,8 +242,37 @@ export function getBackgroundJob(jobId: string): Promise<BackgroundJobDetailResp
   return requestJson<BackgroundJobDetailResponse>(`/api/jobs/${jobId}`);
 }
 
+export function listBackgroundJobs(params?: {
+  jobType?: "anki_deck" | "word_extractor";
+  limit?: number;
+}): Promise<BackgroundJobListResponse> {
+  const query = new URLSearchParams();
+  if (params?.jobType) {
+    query.set("job_type", params.jobType);
+  }
+  if (params?.limit) {
+    query.set("limit", String(params.limit));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return requestJson<BackgroundJobListResponse>(`/api/jobs${suffix}`);
+}
+
 export function getBackgroundJobEvents(jobId: string): Promise<BackgroundJobEventsResponse> {
   return requestJson<BackgroundJobEventsResponse>(`/api/jobs/${jobId}/events`);
+}
+
+export function retryBackgroundJob(jobId: string): Promise<BackgroundJobCreateResponse> {
+  return requestJson<BackgroundJobCreateResponse>(`/api/jobs/${jobId}/retry`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function cancelBackgroundJob(jobId: string): Promise<BackgroundJobDetailResponse> {
+  return requestJson<BackgroundJobDetailResponse>(`/api/jobs/${jobId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }
 
 export function getFlashcardSavedProfiles(): Promise<FlashcardSavedProfilesResponse> {

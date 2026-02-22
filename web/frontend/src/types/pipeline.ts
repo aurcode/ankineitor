@@ -1,5 +1,5 @@
 export type RunStatus = "queued" | "running" | "retrying" | "success" | "error";
-export type BackgroundJobStatus = "queued" | "running" | "success" | "error";
+export type BackgroundJobStatus = "queued" | "running" | "success" | "error" | "canceled";
 export type BackgroundJobType = "anki_deck" | "word_extractor";
 
 export type NodeExecutionStatus = "idle" | "queued" | "running" | "success" | "error";
@@ -124,6 +124,10 @@ export interface BackgroundJobSummary {
   job_type: BackgroundJobType;
   status: BackgroundJobStatus;
   result_payload: Record<string, unknown>;
+  csv_output_path: string;
+  csv_download_name: string;
+  celery_task_id: string;
+  csv_url?: string | null;
   error_message: string;
   created_at: string | null;
   started_at: string | null;
@@ -155,6 +159,10 @@ export interface BackgroundJobDetailResponse {
 export interface BackgroundJobEventsResponse {
   job_id: string;
   events: BackgroundJobEventEnvelope[];
+}
+
+export interface BackgroundJobListResponse {
+  jobs: BackgroundJobSummary[];
 }
 
 export type JobWebsocketMessage =

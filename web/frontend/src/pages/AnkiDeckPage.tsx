@@ -5,6 +5,9 @@ import {
   generateAnkiDeck,
   getAnkiPresets,
   getBackgroundJob,
+  getBackgroundJobEvents,
+  listBackgroundJobs,
+  retryBackgroundJob,
 } from "../api/pipeline";
 import {
   AnkiConfigPayload,
@@ -28,6 +31,14 @@ function upsertEvent(
     return previous.map((item) => (item.sequence === incoming.sequence ? incoming : item));
   }
   return [...previous, incoming].sort((a, b) => a.sequence - b.sequence);
+}
+
+function upsertJob(
+  previous: BackgroundJobSummary[],
+  incoming: BackgroundJobSummary,
+): BackgroundJobSummary[] {
+  const filtered = previous.filter((job) => job.id !== incoming.id);
+  return [incoming, ...filtered];
 }
 
 function parseAnkiResult(payload: Record<string, unknown>): AnkiJobResultPayload | null {
@@ -61,6 +72,17 @@ function parseAnkiResult(payload: Record<string, unknown>): AnkiJobResultPayload
   };
 }
 
+function formatTimestamp(value: string | null): string {
+  if (!value) {
+    return "n/a";
+  }
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
+  }
+}
+
 export function AnkiDeckPage() {
   const [presets, setPresets] = useState<AnkiPresetsResponse | null>(null);
   const [presetKey, setPresetKey] = useState<"default" | "chinese_pipeline">("default");
@@ -68,27 +90,34 @@ export function AnkiDeckPage() {
   const [deckName, setDeckName] = useState("My Anki Deck");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [job, setJob] = useState<BackgroundJobSummary | null>(null);
+  const [jobHistory, setJobHistory] = useState<BackgroundJobSummary[]>([]);
   const [events, setEvents] = useState<BackgroundJobEventEnvelope[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
   const wsCleanupRef = useRef<(() => void) | null>(null);
 
-  const isTerminal = job?.status === "success" || job?.status === "error";
+  const isTerminal =
+    job?.status === "success" || job?.status === "error" || job?.status === "canceled";
   const ankiResult = useMemo(() => parseAnkiResult(job?.result_payload || {}), [job?.result_payload]);
 
   useEffect(() => {
     let active = true;
 
-    const loadPresets = async () => {
+    const loadInitialState = async () => {
       try {
-        const payload = await getAnkiPresets();
+        const [presetsPayload, jobsPayload] = await Promise.all([
+          getAnkiPresets(),
+          listBackgroundJobs({ jobType: "anki_deck", limit: 20 }),
+        ]);
         if (!active) {
           return;
         }
-        setPresets(payload);
-        setConfigJson(prettyJson(payload.default));
+        setPresets(presetsPayload);
+        setConfigJson(prettyJson(presetsPayload.default));
+        setJobHistory(jobsPayload.jobs || []);
       } catch (error) {
         if (active) {
           setErrorMessage(String(error));
@@ -96,7 +125,7 @@ export function AnkiDeckPage() {
       }
     };
 
-    void loadPresets();
+    void loadInitialState();
     return () => {
       active = false;
     };
@@ -111,6 +140,7 @@ export function AnkiDeckPage() {
     wsCleanupRef.current = subscribeToBackgroundJob(job.id, {
       onSnapshot: (snapshot) => {
         setJob(snapshot);
+        setJobHistory((previous) => upsertJob(previous, snapshot));
       },
       onEvent: (event) => {
         setEvents((previous) => upsertEvent(previous, event));
@@ -135,6 +165,7 @@ export function AnkiDeckPage() {
       void getBackgroundJob(job.id)
         .then((payload) => {
           setJob(payload.job);
+          setJobHistory((previous) => upsertJob(previous, payload.job));
         })
         .catch((error) => {
           setErrorMessage(String(error));
@@ -155,6 +186,21 @@ export function AnkiDeckPage() {
     setConfigJson(prettyJson(config));
   };
 
+  const handleSelectJob = async (jobId: string) => {
+    setErrorMessage("");
+    try {
+      const [jobPayload, eventsPayload] = await Promise.all([
+        getBackgroundJob(jobId),
+        getBackgroundJobEvents(jobId),
+      ]);
+      setJob(jobPayload.job);
+      setEvents(eventsPayload.events || []);
+      setJobHistory((previous) => upsertJob(previous, jobPayload.job));
+    } catch (error) {
+      setErrorMessage(String(error));
+    }
+  };
+
   const handleGenerate = async () => {
     if (!csvFile) {
       setErrorMessage("Upload a CSV file first.");
@@ -171,7 +217,6 @@ export function AnkiDeckPage() {
 
     setIsSubmitting(true);
     setErrorMessage("");
-    setJob(null);
     setEvents([]);
 
     try {
@@ -182,10 +227,26 @@ export function AnkiDeckPage() {
       });
       setJob(payload.job);
       setEvents(payload.events || []);
+      setJobHistory((previous) => upsertJob(previous, payload.job));
     } catch (error) {
       setErrorMessage(String(error));
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleRetry = async (jobId: string) => {
+    setRetryingJobId(jobId);
+    setErrorMessage("");
+    try {
+      const payload = await retryBackgroundJob(jobId);
+      setJob(payload.job);
+      setEvents(payload.events || []);
+      setJobHistory((previous) => upsertJob(previous, payload.job));
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setRetryingJobId(null);
     }
   };
 
@@ -261,6 +322,39 @@ export function AnkiDeckPage() {
         <button type="button" className="primary" disabled={isSubmitting} onClick={handleGenerate}>
           {isSubmitting ? "Queuing..." : "Generate Deck"}
         </button>
+      </section>
+
+      <section className="panel-block">
+        <h2>Recent Deck Jobs</h2>
+        {jobHistory.length === 0 ? (
+          <p className="muted">No jobs yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {jobHistory.map((historyJob) => (
+              <li key={historyJob.id}>
+                <strong>{historyJob.status}</strong> - {formatTimestamp(historyJob.created_at)} -{" "}
+                <code>{historyJob.id}</code>{" "}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => void handleSelectJob(historyJob.id)}
+                >
+                  Open
+                </button>{" "}
+                {(historyJob.status === "error" || historyJob.status === "canceled") ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={retryingJobId === historyJob.id}
+                    onClick={() => void handleRetry(historyJob.id)}
+                  >
+                    {retryingJobId === historyJob.id ? "Retrying..." : "Retry"}
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       {job ? (

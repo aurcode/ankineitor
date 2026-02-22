@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { analyzeWordExtractor, getBackgroundJob } from "../api/pipeline";
+import {
+  analyzeWordExtractor,
+  cancelBackgroundJob,
+  downloadAuthenticatedFile,
+  getBackgroundJob,
+  getBackgroundJobEvents,
+  listBackgroundJobs,
+  retryBackgroundJob,
+} from "../api/pipeline";
 import {
   BackgroundJobEventEnvelope,
   BackgroundJobSummary,
@@ -61,6 +69,14 @@ function upsertEvent(
   return [...previous, incoming].sort((a, b) => a.sequence - b.sequence);
 }
 
+function upsertJob(
+  previous: BackgroundJobSummary[],
+  incoming: BackgroundJobSummary,
+): BackgroundJobSummary[] {
+  const filtered = previous.filter((job) => job.id !== incoming.id);
+  return [incoming, ...filtered];
+}
+
 function parseWordExtractorResult(payload: Record<string, unknown>): WordExtractorResponse | null {
   const summary = payload.summary;
   if (!summary || typeof summary !== "object") {
@@ -89,23 +105,75 @@ function parseWordExtractorResult(payload: Record<string, unknown>): WordExtract
   return payload as unknown as WordExtractorResponse;
 }
 
+function formatTimestamp(value: string | null): string {
+  if (!value) {
+    return "n/a";
+  }
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
+  }
+}
+
 export function WordExtractorPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [textInput, setTextInput] = useState("");
   const [selectedHskLevels, setSelectedHskLevels] = useState<string[]>([]);
   const [minFrequency, setMinFrequency] = useState(2);
   const [job, setJob] = useState<BackgroundJobSummary | null>(null);
+  const [jobHistory, setJobHistory] = useState<BackgroundJobSummary[]>([]);
   const [events, setEvents] = useState<BackgroundJobEventEnvelope[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isDownloadingCsv, setIsDownloadingCsv] = useState(false);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
+  const [cancelingJobId, setCancelingJobId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
   const wsCleanupRef = useRef<(() => void) | null>(null);
 
-  const isTerminal = job?.status === "success" || job?.status === "error";
+  const isTerminal =
+    job?.status === "success" || job?.status === "error" || job?.status === "canceled";
   const result = useMemo(
     () => parseWordExtractorResult(job?.result_payload || {}),
     [job?.result_payload],
   );
+  const csvDownloadUrl = useMemo(() => {
+    if (!job) {
+      return "";
+    }
+    const fromPayload = job.result_payload?.csv_url;
+    if (typeof fromPayload === "string" && fromPayload.trim()) {
+      return fromPayload;
+    }
+    if (typeof job.csv_url === "string" && job.csv_url.trim()) {
+      return job.csv_url;
+    }
+    return "";
+  }, [job]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadJobs = async () => {
+      try {
+        const payload = await listBackgroundJobs({ jobType: "word_extractor", limit: 20 });
+        if (!active) {
+          return;
+        }
+        setJobHistory(payload.jobs || []);
+      } catch (error) {
+        if (active) {
+          setErrorMessage(String(error));
+        }
+      }
+    };
+
+    void loadJobs();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!job) {
@@ -116,6 +184,7 @@ export function WordExtractorPage() {
     wsCleanupRef.current = subscribeToBackgroundJob(job.id, {
       onSnapshot: (snapshot) => {
         setJob(snapshot);
+        setJobHistory((previous) => upsertJob(previous, snapshot));
       },
       onEvent: (event) => {
         setEvents((previous) => upsertEvent(previous, event));
@@ -140,6 +209,7 @@ export function WordExtractorPage() {
       void getBackgroundJob(job.id)
         .then((payload) => {
           setJob(payload.job);
+          setJobHistory((previous) => upsertJob(previous, payload.job));
         })
         .catch((error) => {
           setErrorMessage(String(error));
@@ -163,10 +233,24 @@ export function WordExtractorPage() {
     });
   };
 
+  const handleSelectJob = async (jobId: string) => {
+    setErrorMessage("");
+    try {
+      const [jobPayload, eventsPayload] = await Promise.all([
+        getBackgroundJob(jobId),
+        getBackgroundJobEvents(jobId),
+      ]);
+      setJob(jobPayload.job);
+      setEvents(eventsPayload.events || []);
+      setJobHistory((previous) => upsertJob(previous, jobPayload.job));
+    } catch (error) {
+      setErrorMessage(String(error));
+    }
+  };
+
   const handleAnalyze = async () => {
     setIsLoading(true);
     setErrorMessage("");
-    setJob(null);
     setEvents([]);
     try {
       const payload = await analyzeWordExtractor({
@@ -177,10 +261,58 @@ export function WordExtractorPage() {
       });
       setJob(payload.job);
       setEvents(payload.events || []);
+      setJobHistory((previous) => upsertJob(previous, payload.job));
     } catch (error) {
       setErrorMessage(String(error));
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleRetry = async (jobId: string) => {
+    setRetryingJobId(jobId);
+    setErrorMessage("");
+    try {
+      const payload = await retryBackgroundJob(jobId);
+      setJob(payload.job);
+      setEvents(payload.events || []);
+      setJobHistory((previous) => upsertJob(previous, payload.job));
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setRetryingJobId(null);
+    }
+  };
+
+  const handleCancel = async (jobId: string) => {
+    setCancelingJobId(jobId);
+    setErrorMessage("");
+    try {
+      const payload = await cancelBackgroundJob(jobId);
+      setJob(payload.job);
+      setJobHistory((previous) => upsertJob(previous, payload.job));
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setCancelingJobId(null);
+    }
+  };
+
+  const handleDownloadCsv = async () => {
+    if (!job || !csvDownloadUrl) {
+      return;
+    }
+    setIsDownloadingCsv(true);
+    setErrorMessage("");
+    try {
+      await downloadAuthenticatedFile({
+        url: csvDownloadUrl,
+        fallbackFileName: job.csv_download_name || `word_extractor_${job.id}.csv`,
+      });
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setIsDownloadingCsv(false);
     }
   };
 
@@ -245,6 +377,39 @@ export function WordExtractorPage() {
         </button>
       </section>
 
+      <section className="panel-block">
+        <h2>Recent Extractor Jobs</h2>
+        {jobHistory.length === 0 ? (
+          <p className="muted">No jobs yet.</p>
+        ) : (
+          <ul className="plain-list">
+            {jobHistory.map((historyJob) => (
+              <li key={historyJob.id}>
+                <strong>{historyJob.status}</strong> - {formatTimestamp(historyJob.created_at)} -{" "}
+                <code>{historyJob.id}</code>{" "}
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => void handleSelectJob(historyJob.id)}
+                >
+                  Open
+                </button>{" "}
+                {(historyJob.status === "error" || historyJob.status === "canceled") ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={retryingJobId === historyJob.id}
+                    onClick={() => void handleRetry(historyJob.id)}
+                  >
+                    {retryingJobId === historyJob.id ? "Retrying..." : "Retry"}
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {job ? (
         <section className="panel-block">
           <h2>Job Status</h2>
@@ -253,6 +418,17 @@ export function WordExtractorPage() {
           </p>
           <p className="muted">Status: {job.status}</p>
           {job.error_message ? <p className="error-message">{job.error_message}</p> : null}
+
+          {(job.status === "queued" || job.status === "running") ? (
+            <button
+              type="button"
+              className="secondary"
+              disabled={cancelingJobId === job.id}
+              onClick={() => void handleCancel(job.id)}
+            >
+              {cancelingJobId === job.id ? "Canceling..." : "Cancel Job"}
+            </button>
+          ) : null}
 
           <h3>Events</h3>
           {events.length === 0 ? (
@@ -278,6 +454,19 @@ export function WordExtractorPage() {
             <li>Removed words: {result.summary.removed_count}</li>
             <li>Final words: {result.summary.final_count}</li>
           </ul>
+
+          <div className="inline-controls">
+            {csvDownloadUrl ? (
+              <button
+                type="button"
+                className="secondary"
+                disabled={isDownloadingCsv}
+                onClick={handleDownloadCsv}
+              >
+                {isDownloadingCsv ? "Preparing..." : "Download Final Words CSV"}
+              </button>
+            ) : null}
+          </div>
 
           <label className="field-label" htmlFor="copyable-words">
             Copyable Word List

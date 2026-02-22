@@ -97,8 +97,12 @@ Additional migrated tab APIs:
 - Word Extractor:
   - `POST /api/word-extractor/analyze` (creates async background job)
 - Background jobs:
+  - `GET /api/jobs?job_type=...&limit=...`
   - `GET /api/jobs/{job_id}`
   - `GET /api/jobs/{job_id}/events`
+  - `POST /api/jobs/{job_id}/cancel`
+  - `POST /api/jobs/{job_id}/retry`
+  - `GET /api/jobs/{job_id}/results/csv` (for jobs that produced CSV output)
   - `WS /ws/jobs/{job_id}`
 
 Authentication notes:
