@@ -57,15 +57,20 @@ class TransformationPipeline:
             )
             if cls is not None
         )
-        if llm_transform_types:
-            for t in transformations:
-                if isinstance(t, llm_transform_types):
-                    self.llm_transformations.append(t)
-                else:
-                    self.main_transformations.append(t)
-        else:
-            logger.warning("LLM transformation classes not found, adding all to main.")
-            self.main_transformations = transformations
+        for transform in transformations:
+            stage = self._resolve_transform_stage(
+                transform=transform,
+                llm_transform_types=llm_transform_types,
+            )
+            if stage == "llm":
+                self.llm_transformations.append(transform)
+            else:
+                self.main_transformations.append(transform)
+
+        if not llm_transform_types and self.llm_transformations:
+            logger.warning(
+                "LLM stage classification is using metadata only; legacy LLM classes were not imported."
+            )
 
         # Columns for the *main* pipeline cache
         self.columns = [t.column_name for t in self.main_transformations]
@@ -79,6 +84,47 @@ class TransformationPipeline:
             f"Main transforms ({len(self.main_transformations)}): {main_names}, "
             f"LLM transforms ({len(self.llm_transformations)}): {llm_names}"
         )
+
+    @staticmethod
+    def _resolve_transform_stage(
+        transform: Transformation,
+        llm_transform_types: tuple[type, ...],
+    ) -> str:
+        configured_stage = (
+            str(getattr(transform, "pipeline_stage", "") or "").strip().lower()
+        )
+        if configured_stage == "llm":
+            return configured_stage
+        if llm_transform_types and isinstance(transform, llm_transform_types):
+            return "llm"
+        if configured_stage == "main":
+            return configured_stage
+        return "main"
+
+    @staticmethod
+    def _required_input_columns(transform: Transformation) -> tuple[str, ...]:
+        required_columns = getattr(transform, "required_input_columns", ())
+        if not isinstance(required_columns, (list, tuple, set)):
+            return ()
+        return tuple(str(col).strip() for col in required_columns if str(col).strip())
+
+    @staticmethod
+    def _is_parallel_independent_llm_transform(transform: Transformation) -> bool:
+        if TransformationPipeline._required_input_columns(transform):
+            return False
+
+        parallel_mode = str(getattr(transform, "llm_parallel_mode", "") or "").strip().lower()
+        if parallel_mode == "parallel_independent":
+            return True
+
+        # Backward compatibility for transforms that have not adopted metadata yet.
+        if (
+            LLMImageTransformation is not None
+            and isinstance(transform, LLMImageTransformation)
+            and not getattr(transform, "requires_master_prompt", False)
+        ):
+            return True
+        return False
 
     def transform_data(self, words: List[str], dev_mode: bool = False) -> pd.DataFrame:
         """
@@ -322,11 +368,7 @@ class TransformationPipeline:
             independent_llm_transforms: List[Transformation] = []
             dependent_llm_transforms: List[Transformation] = []
             for llm_transform in self.llm_transformations:
-                if (
-                    LLMImageTransformation is not None
-                    and isinstance(llm_transform, LLMImageTransformation)
-                    and not getattr(llm_transform, "requires_master_prompt", False)
-                ):
+                if self._is_parallel_independent_llm_transform(llm_transform):
                     independent_llm_transforms.append(llm_transform)
                 else:
                     dependent_llm_transforms.append(llm_transform)
@@ -487,101 +529,3 @@ class TransformationPipeline:
         tqdm.pandas(desc="Updating categories")
         df["categories"] = df[self.key_field].progress_apply(_add_and_get_cats)
         return df.reset_index(drop=True)
-
-
-if __name__ == "__main__":
-    import os
-    from db_client import SQLAlchemyClient
-    from audio_creator import AudioCreator
-    from transformations import (
-        Transformation,
-        PinyinTransformation,
-        TranslationTransformation,
-        AudioTransformation,
-        TimestampTransformation,
-    )
-    from llm_transformation import LLMTransformation
-    from loguru import logger
-    from typing import List
-
-    # --- Setup Logging ---
-    # Ensure logs directory exists
-    os.makedirs("logs", exist_ok=True)
-    logger.add("logs/pipeline.log", rotation="10 MB", level="INFO")
-    logger.add("logs/pipeline_debug.log", rotation="10 MB", level="DEBUG", enqueue=True)
-    logger.info("--- Starting New Pipeline Job ---")
-
-    # 1. Setup Dependencies
-
-    # This client manages the *main pipeline* cache
-    # It stores the *final* processed data (pinyin, translation, audio path, etc.)
-    pipeline_db_client = SQLAlchemyClient(db_path="ankineitor_pipeline.db")
-
-    # This client *only* manages the cache for *LLM inference*
-    # This separation is good: it caches raw API results.
-    llm_db_client = SQLAlchemyClient(db_path="ankineitor_llm_cache.db")
-
-    # This handles audio file creation
-    audio_creator = AudioCreator(folder_name="./my_audio_files")
-
-    # 2. Define the pipeline transformations
-    # We can now add LLMTransformation just like any other
-    my_transformations: List[Transformation] = [
-        PinyinTransformation(),
-        TranslationTransformation(lan_in="zh-CN", lan_out="es"),
-        AudioTransformation(audio_creator=audio_creator),
-        TimestampTransformation(),
-        # Add the refactored LLMTransformation
-        # We inject its dedicated database client
-        LLMTransformation(db_client=llm_db_client),
-    ]
-
-    # 3. Initialize the pipeline
-    # We pass the *pipeline's* db client here
-    pipeline = TransformationPipeline(
-        db_client=pipeline_db_client,
-        transformations=my_transformations,
-        table_name="hanzi_processing",  # Main table for processed words
-    )
-
-    # 4. Define words and run the pipeline
-    words_to_process = [
-        "你好",  # Hello
-        "谢谢",  # Thank you
-        "数据",  # Data
-        "工程师",  # Engineer
-        "你好",  # Duplicate (tests pipeline caching)
-        "苹果",  # Apple
-        "熊猫",  # Panda (New)
-    ]
-
-    try:
-        # dev_mode=True processes only the first 20 words
-        df_results = pipeline.transform_data(words_to_process, dev_mode=False)
-
-        print("\n--- Final Processed Data ---")
-        print(df_results)
-
-        # Save results to CSV
-        df_results.to_csv("pipeline_results.csv", index=False)
-        logger.info("Pipeline results saved to 'pipeline_results.csv'")
-
-        # 5. (Optional) Add categories to the results
-        # This step runs *after* the main pipeline processing
-        logger.info("Adding 'HSK1' category to all processed words...")
-        df_categorized = pipeline.transform_categories(df_results, category="HSK1")
-
-        print("\n--- Final Categorized Data ---")
-        print(df_categorized)
-        df_categorized.to_csv("pipeline_results_categorized.csv", index=False)
-        logger.info("Categorized results saved to 'pipeline_results_categorized.csv'")
-
-    except Exception as e:
-        logger.critical(f"An unhandled error occurred in the pipeline: {e}")
-
-    finally:
-        # 6. Close DB connections
-        pipeline_db_client.close()
-        llm_db_client.close()
-        logger.info("Database connections closed. Job complete.")
-        print("\nJob complete. Check logs/pipeline.log for details.")

@@ -18,6 +18,7 @@ from ankineitor.pipeline.llm_image_prompt_transformation import (
     LLMImagePromptTransformation,
 )
 from ankineitor.pipeline.llm_image_transformation import LLMImageTransformation
+from ankineitor.pipeline.llm_profiles import DEFAULT_LLM_PROFILE_ID, get_llm_profile
 
 # --- Tab Imports ---
 # Import the render functions from their new files
@@ -63,21 +64,41 @@ def get_dependencies():
         llm_db = SQLAlchemyClient(db_path="data/ankineitor_llm_cache.db")
         audio_creator = AudioCreator(folder_name="./my_audio_files")
 
-        def build_transformations():
+        def build_transformations(
+            llm_profile_id: str = DEFAULT_LLM_PROFILE_ID,
+            llm_source_language: str = "Chinese (Simplified)",
+        ):
+            profile_id = (llm_profile_id or DEFAULT_LLM_PROFILE_ID).strip()
+            source_language = (
+                llm_source_language
+                or get_llm_profile(profile_id).source_language
+                or "Chinese (Simplified)"
+            )
             # Ordered logically: basic transformations first, then LLM, then sentence audio.
             return {
-                "Pinyin": PinyinTransformation(),
+                "Pinyin": PinyinTransformation(source_language=source_language),
                 "Translation (Legacy Google/CEDICT)": TranslationTransformation(
                     lan_in="zh-CN", lan_out="es"
                 ),
-                "Audio": AudioTransformation(audio_creator=audio_creator),
+                "Audio": AudioTransformation(
+                    audio_creator=audio_creator,
+                    source_language=source_language,
+                ),
                 "Timestamp": TimestampTransformation(),
-                "LLM (Meanings/Sentences)": LLMTransformation(db_client=llm_db),
+                "LLM (Meanings/Sentences)": LLMTransformation(
+                    db_client=llm_db,
+                    profile_id=profile_id,
+                ),
                 "LLM Image Prompt (Visual Translator)": LLMImagePromptTransformation(
-                    db_client=llm_db
+                    db_client=llm_db,
+                    source_language=source_language,
                 ),
                 "LLM Image Renderer (Master Prompt)": LLMImageTransformation(),
-                "LLM Audio (Sentences)": LLMAudioTransformation(audio_creator=audio_creator),
+                "LLM Audio (Sentences)": LLMAudioTransformation(
+                    audio_creator=audio_creator,
+                    source_language=source_language,
+                    profile_id=profile_id,
+                ),
             }
 
         # Keep one preview map for UI selection, but build fresh instances per run.

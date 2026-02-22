@@ -233,14 +233,14 @@ class DeckGenerator:
 
         logger.info("Creating notes...")
         note_count = 0
-        for _, row in df_formatted.iterrows():
+        for row_index, row in df_formatted.iterrows():
             try:
                 note = self._create_note(row)
                 if note:
                     deck.add_note(note)
                     note_count += 1
             except Exception as e:
-                logger.error(f"Error creating note for row {_.name}: {e}")
+                logger.error(f"Error creating note for row {row_index}: {e}")
         logger.info(f"Created {note_count} notes from {len(df)} rows.")
 
         logger.info("Writing deck to file...")

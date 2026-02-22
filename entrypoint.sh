@@ -6,6 +6,7 @@ chown -R appuser:appuser /app/media
 chown -R appuser:appuser /app/output
 chown -R appuser:appuser /app/logs
 chown -R appuser:appuser /app/my_audio_files
+chown -R appuser:appuser /app/my_image_files
 
 # Execute the command passed to the script as the appuser
 exec gosu appuser "$@"

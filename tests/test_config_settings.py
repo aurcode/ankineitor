@@ -196,6 +196,6 @@ class TestSettingsConfiguration:
             assert settings.log_level == "DEBUG"
 
     def test_env_file_default(self):
-        config = Settings.Config
-        assert config.env_file == ".env"
-        assert config.env_file_encoding == "utf-8"
+        config = Settings.model_config
+        assert config.get("env_file") == ".env"
+        assert config.get("env_file_encoding") == "utf-8"

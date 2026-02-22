@@ -2,14 +2,20 @@
 
 import os
 import json
-from typing import Optional
-from pydantic import validator
-from pydantic_settings import BaseSettings
+from typing import Any, List, Optional
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
 
 class Settings(BaseSettings):
     """Secure application settings with validation."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
     
     # API Keys
     llm_api_token: Optional[str] = None
@@ -35,33 +41,35 @@ class Settings(BaseSettings):
     llm_model: str = "gemini-3.1-pro-preview"
     llm_image_prompt_model: str = "gemini-3.1-pro-preview"
     llm_image_master_prompt_template: Optional[str] = None
-    llm_image_do_not_generate_terms: list = [
-        "与",
-        "一个",
-        "不会",
-        "而",
-        "于",
-        "以",
-        "以及",
-        "想要",
-        "觉",
-        "之",
-        "之中",
-        "可",
-        "心头",
-        "一阵",
-        "难以",
-        "大半夜",
-        "嘶",
-        "看来",
-        "将",
-        "下意识",
-        "这时",
-        "下方",
-        "一下",
-        "连通",
-        "半个",
-    ]
+    llm_image_do_not_generate_terms: List[str] = Field(
+        default_factory=lambda: [
+            "与",
+            "一个",
+            "不会",
+            "而",
+            "于",
+            "以",
+            "以及",
+            "想要",
+            "觉",
+            "之",
+            "之中",
+            "可",
+            "心头",
+            "一阵",
+            "难以",
+            "大半夜",
+            "嘶",
+            "看来",
+            "将",
+            "下意识",
+            "这时",
+            "下方",
+            "一下",
+            "连通",
+            "半个",
+        ]
+    )
     llm_image_model: str = "gemini-3-pro-image-preview"
     llm_image_max_workers: int = 1
     llm_profile_id: str = "lotm_zh_en_es"
@@ -78,29 +86,34 @@ class Settings(BaseSettings):
     
     # Security settings
     max_file_size_mb: int = 10
-    allowed_file_extensions: list = [".csv", ".txt", ".pdf", ".docx", ".pptx"]
+    allowed_file_extensions: List[str] = Field(
+        default_factory=lambda: [".csv", ".txt", ".pdf", ".docx", ".pptx"]
+    )
     
     # Application settings
     log_level: str = "INFO"
     dev_mode: bool = False
     
-    @validator("max_file_size_mb")
-    def validate_file_size(cls, v):
+    @field_validator("max_file_size_mb")
+    @classmethod
+    def validate_file_size(cls, v: int) -> int:
         """Validate file size limits."""
         if v <= 0 or v > 100:
             raise ValueError("File size must be between 1 and 100 MB")
         return v
     
-    @validator("log_level")
-    def validate_log_level(cls, v):
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
         """Validate log level."""
         valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
         if v.upper() not in valid_levels:
             raise ValueError(f"Invalid log level. Must be one of: {valid_levels}")
         return v.upper()
     
-    @validator("allowed_file_extensions", pre=True)
-    def parse_allowed_extensions(cls, v):
+    @field_validator("allowed_file_extensions", mode="before")
+    @classmethod
+    def parse_allowed_extensions(cls, v: Any) -> Any:
         """Parse allowed file extensions from string or list."""
         if isinstance(v, str):
             # Split comma-separated string and clean up extensions
@@ -112,8 +125,9 @@ class Settings(BaseSettings):
             return [ext if ext.startswith(".") else f".{ext}" for ext in v]
         return v
 
-    @validator("llm_image_do_not_generate_terms", pre=True)
-    def parse_llm_image_do_not_generate_terms(cls, v):
+    @field_validator("llm_image_do_not_generate_terms", mode="before")
+    @classmethod
+    def parse_llm_image_do_not_generate_terms(cls, v: Any) -> Any:
         """Parse blocked image terms from JSON list or comma-separated string."""
         if isinstance(v, str):
             cleaned = v.strip()
@@ -162,13 +176,6 @@ class Settings(BaseSettings):
                 return candidate.strip()
         return None
     
-    class Config:
-        """Pydantic configuration."""
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
-
-
 # Global settings instance
 _settings = None
 

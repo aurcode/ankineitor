@@ -18,8 +18,6 @@ from ankineitor.security.exceptions import (
     ValidationError,
     PathTraversalError,
 )
-from ankineitor.pipeline.llm_transformation import LLMTransformation
-from ankineitor.config.settings import Settings
 
 
 class TestEndToEndValidationFlows:
@@ -264,6 +262,8 @@ class TestStreamlitInterfaceSecurity:
             assert len(category) <= 50  # Reasonable length limit
 
 
+@pytest.mark.slow
+@pytest.mark.benchmark
 class TestPerformanceAndScalability:
     """Test security validation performance and scalability."""
 
@@ -367,7 +367,7 @@ class TestSecurityAuditAndCompliance:
                 assert ";" not in result
                 assert "--" not in result
 
-    def test_data_sanitization_compliance(self):
+    def test_data_sanitization_compliance(self, tmp_path):
         """Test compliance with data sanitization requirements."""
         # Test SQL injection sanitization
         sql_injection = "'; DROP TABLE users; --"
@@ -382,5 +382,6 @@ class TestSecurityAuditAndCompliance:
         assert "<" not in sanitized
         assert ">" not in sanitized
         
-        # Path validator normalizes unresolved relative paths in current implementation.
-        assert isinstance(validate_path("../../../etc/passwd"), Path)
+        # Path traversal should be rejected when a base path is enforced.
+        with pytest.raises(PathTraversalError):
+            validate_path("../../../etc/passwd", tmp_path)

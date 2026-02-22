@@ -1,15 +1,9 @@
 import hashlib
 import json
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
-import google.auth as google_auth
 import pandas as pd
-from dotenv import load_dotenv
-from google import genai
 from google.genai import types as genai_types
-from google.oauth2 import credentials as oauth_credentials
-from google.oauth2 import service_account
 from loguru import logger
 from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -18,15 +12,16 @@ from tqdm import tqdm
 from ..config import get_settings
 from ..security.exceptions import ValidationError
 from .db_client import SQLAlchemyClient
-from .llm_transformation import (
-    _normalize_token,
-    _resolve_model_name,
-    _resolve_token_auth_mode,
+from .llm_auth import (
+    normalize_token as _normalize_token,
+    resolve_model_name as _resolve_model_name,
+)
+from .llm_client_factory import (
+    GenAIClientConfig,
+    build_genai_client as _build_genai_client_shared,
+    resolve_vertex_credentials as _resolve_vertex_credentials_shared,
 )
 from .transformations import Transformation
-
-load_dotenv()
-
 
 DEFAULT_IMAGE_PROMPT_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_IMAGE_DO_NOT_GENERATE_TERMS = [
@@ -135,6 +130,8 @@ class LLMImagePromptTransformation(Transformation):
     Stage 1: builds a strict master image prompt from each vocabulary word.
     """
 
+    pipeline_stage = "llm"
+
     def __init__(
         self,
         db_client: SQLAlchemyClient,
@@ -195,68 +192,23 @@ class LLMImagePromptTransformation(Transformation):
         return "master_image_prompt"
 
     def _resolve_vertex_credentials(self) -> tuple[object, str]:
-        if self.credentials_path:
-            path = Path(self.credentials_path)
-            if path.exists():
-                credentials = service_account.Credentials.from_service_account_file(
-                    str(path),
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
-                )
-                project_id = self.project_id or credentials.project_id
-                if not project_id:
-                    raise ValidationError(
-                        "Vertex project ID is required when using service account credentials."
-                    )
-                return credentials, project_id
-
-        try:
-            credentials, detected_project_id = google_auth.default(
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        return _resolve_vertex_credentials_shared(
+            GenAIClientConfig(
+                api_token=self.api_token,
+                project_id=self.project_id,
+                location=self.location,
+                credentials_path=self.credentials_path,
             )
-        except Exception as exc:
-            raise ValidationError(
-                "Vertex credentials not found. Set BQ_CREDENTIALS_PATH/VERTEX_CREDENTIALS_PATH "
-                "or provide LLM_API_TOKEN."
-            ) from exc
+        )
 
-        project_id = self.project_id or detected_project_id
-        if not project_id:
-            raise ValidationError(
-                "Vertex project ID is required when using ADC credentials."
+    def _build_genai_client(self):
+        return _build_genai_client_shared(
+            GenAIClientConfig(
+                api_token=self.api_token,
+                project_id=self.project_id,
+                location=self.location,
+                credentials_path=self.credentials_path,
             )
-        return credentials, project_id
-
-    def _build_genai_client(self) -> genai.Client:
-        if self.api_token:
-            mode = _resolve_token_auth_mode(self.api_token)
-
-            if mode == "vertex_oauth_token":
-                if not self.project_id:
-                    raise ValidationError(
-                        "GCP_PROJECT_ID is required when using OAuth access tokens for Vertex."
-                    )
-                credentials = oauth_credentials.Credentials(
-                    token=self.api_token,
-                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
-                )
-                return genai.Client(
-                    vertexai=True,
-                    credentials=credentials,
-                    project=self.project_id,
-                    location=self.location,
-                )
-
-            if mode == "vertex_api_key":
-                return genai.Client(vertexai=True, api_key=self.api_token)
-
-            return genai.Client(api_key=self.api_token)
-
-        credentials, project_id = self._resolve_vertex_credentials()
-        return genai.Client(
-            vertexai=True,
-            credentials=credentials,
-            project=project_id,
-            location=self.location,
         )
 
     def _extract_response_text(self, response: object) -> str:

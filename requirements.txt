@@ -20,3 +20,4 @@ pytesseract
 google-genai
 google-auth
 python-dotenv
+tenacity

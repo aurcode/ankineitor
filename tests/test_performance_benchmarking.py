@@ -3,7 +3,6 @@
 import pytest
 import time
 import psutil
-import os
 from unittest.mock import Mock, patch
 from pathlib import Path
 
@@ -16,10 +15,11 @@ from ankineitor.security.validators import (
     sanitize_sql_input,
 )
 from ankineitor.security.exceptions import (
-    InvalidFileError,
     ValidationError,
     PathTraversalError,
 )
+
+pytestmark = [pytest.mark.slow, pytest.mark.benchmark]
 
 
 class TestPerformanceBenchmarks:

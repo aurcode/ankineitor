@@ -16,6 +16,8 @@ class LLMAudioTransformation(Transformation):
     Adds audio columns for each detected sentence column (sentence_1..sentence_N).
     """
 
+    pipeline_stage = "llm"
+
     def __init__(
         self,
         audio_creator: AudioCreator,

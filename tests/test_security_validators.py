@@ -37,12 +37,10 @@ class TestFileUploadValidation:
     def test_file_size_exceeds_limit(self, large_mock_file, mock_settings):
         """Test validation with file exceeding size limit."""
         with patch('ankineitor.security.validators.get_settings', return_value=mock_settings):
-            # The large_mock_file should trigger size limit, not CSV row limit
-            # Let's make sure it's not a CSV to avoid row limit issues
             large_mock_file.name = "large_file.txt"
-            # The current implementation allows this file size, so we just verify it doesn't crash
-            result = validate_file_upload(large_mock_file)
-            assert result is True  # Current implementation allows this size
+            mock_settings.max_file_size_mb = 1
+            with pytest.raises(InvalidFileError, match="exceeds maximum allowed size"):
+                validate_file_upload(large_mock_file)
 
     def test_invalid_file_extension(self, mock_streamlit_file, mock_settings):
         """Test validation with invalid file extension."""
@@ -233,11 +231,9 @@ class TestPathValidation:
         assert isinstance(result, Path)
 
     def test_path_with_traversal(self):
-        """Test detection of path traversal."""
-        # The current implementation doesn't raise an exception for this case
-        # It just logs a warning, so we verify the function works
+        """Relative traversal strings are normalized when no base path is enforced."""
         result = validate_path("../../../etc/passwd")
-        assert isinstance(result, Path)
+        assert result.is_absolute()
 
     def test_path_with_base_path(self, temp_dir):
         """Test validation against base path."""
@@ -358,12 +354,13 @@ class TestSecurityIntegration:
             with pytest.raises(PathTraversalError):
                 validate_file_upload(mock_streamlit_file, expected_extensions=[".csv"])
             
-            # Test with SQL injection in filename - current implementation doesn't remove all dangerous content
+            # Test with SQL-like payload in filename
             mock_streamlit_file.name = "test'; DROP TABLE users; --.csv"
             result = sanitize_filename(mock_streamlit_file.name)
-            # Current implementation doesn't remove all dangerous chars as expected
-            # Just verify the function works without crashing
-            assert isinstance(result, str)  # Should return a string result
+            assert result.endswith(".csv")
+            assert "/" not in result
+            assert "\\" not in result
+            assert result.strip() != ""
             
             # Test with XSS attempt in content
             malicious_content = """word,pinyin,translation
@@ -377,7 +374,7 @@ class TestSecurityIntegration:
         malicious_chinese = "你好'; DROP TABLE users; --"
         result = validate_word_input(malicious_chinese)
         assert len(result) == 1
-        assert "DROP TABLE" not in result[0]
+        assert "DROPTABLEusers" in result[0]
         
         # Test with mixed Chinese and dangerous characters
         mixed_input = "测试\n<script>alert(1)</script>\n数据"
@@ -405,19 +402,16 @@ class TestSecurityIntegration:
     def test_security_logging_and_monitoring(self, mock_settings, caplog):
         """Test that security events are properly logged."""
         with patch('ankineitor.security.validators.get_settings', return_value=mock_settings):
-            # Test suspicious filename logging - the current implementation doesn't log for this case
             with caplog.at_level("WARNING"):
-                sanitize_filename("test<>file.csv")
-                # The current implementation doesn't log for this case, so we just verify it works
-                assert True  # Test passes if no exception is raised
+                sanitized = sanitize_filename("test<>file.csv")
+                assert sanitized == "testfile.csv"
             
-            # Test path traversal attempt logging
-            with caplog.at_level("ERROR"):
+            with caplog.at_level("WARNING"):
                 with pytest.raises(PathTraversalError):
                     sanitize_filename("../../../etc/passwd")
-                # The current implementation logs at WARNING level, not ERROR
-                assert "Path traversal detected" in caplog.text or True  # Allow test to pass even if logging behavior changes
 
+    @pytest.mark.slow
+    @pytest.mark.benchmark
     def test_performance_security_validation(self):
         """Test security validation performance with large datasets."""
         import time
@@ -478,14 +472,13 @@ class TestAdvancedSecurityScenarios:
         ]
         
         for attempt in traversal_attempts:
-            # Current implementation doesn't handle encoded traversal attempts well
-            # Just verify the function doesn't crash
-            try:
+            if ".." in attempt or "/" in attempt or "\\" in attempt:
+                with pytest.raises(PathTraversalError):
+                    sanitize_filename(attempt)
+            else:
                 result = sanitize_filename(attempt)
-                # Should either raise exception or return sanitized result
-                assert isinstance(result, str) or result is None
-            except PathTraversalError:
-                pass  # This is expected behavior
+                assert "/" not in result
+                assert "\\" not in result
 
     def test_malicious_content_in_various_formats(self):
         """Test malicious content detection in various file formats."""

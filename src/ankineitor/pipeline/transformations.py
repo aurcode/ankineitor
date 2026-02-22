@@ -15,6 +15,11 @@ from tqdm import tqdm
 class Transformation(ABC):
     """Abstract base class for a single transformation step."""
 
+    # Metadata used by orchestration layers to group/schedule transforms.
+    pipeline_stage: str = "main"
+    required_input_columns: tuple[str, ...] = ()
+    llm_parallel_mode: str = "sequential"
+
     @property
     def column_name(self) -> str:
         """The name of the column this transformation creates/modifies."""

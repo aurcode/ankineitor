@@ -2,30 +2,15 @@ import streamlit as st
 import pandas as pd
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 from loguru import logger
 
-# Import only the pipeline-specific dependencies
-from ankineitor.pipeline import TransformationPipeline
-from ankineitor.pipeline.transformations import (
-    AudioTransformation,
-    PinyinTransformation,
-    TranslationTransformation,
-    TimestampTransformation,
-)
-from ankineitor.pipeline.llm_transformation import LLMTransformation
-from ankineitor.pipeline.llm_image_prompt_transformation import (
-    LLMImagePromptTransformation,
-)
-from ankineitor.pipeline.llm_image_transformation import LLMImageTransformation
-from ankineitor.pipeline.llm_audio_transformation import LLMAudioTransformation
+from ankineitor.application import PipelineRunService
 from ankineitor.pipeline.llm_profiles import (
     DEFAULT_LLM_PROFILE_ID,
-    LLMProfile,
     get_llm_profile,
     list_llm_profiles,
 )
-from ankineitor.common.pipeline_result_store import save_pipeline_results_csv
 from ankineitor.security import validate_word_input, ValidationError
 
 PROFILE_TRANSFORM_SELECTIONS_KEY = "pipeline_selected_transform_names_by_profile"
@@ -54,71 +39,6 @@ def _coerce_option(value, options, fallback):
 def _profile_label(profile_id: str) -> str:
     profile = get_llm_profile(profile_id)
     return profile.display_name
-
-
-def _get_unavailable_transform_reason(
-    transform_name: str,
-    transform: object,
-    selected_profile: LLMProfile,
-) -> Optional[str]:
-    del transform_name
-    if isinstance(transform, LLMTransformation):
-        return "Always included automatically (core profile prompt stage)."
-    if isinstance(transform, TimestampTransformation):
-        return "Always included automatically (creation timestamp)."
-    if isinstance(transform, PinyinTransformation):
-        return "Provided by the profile prompt output."
-    if isinstance(transform, TranslationTransformation):
-        return "Provided by the profile prompt output."
-    if isinstance(transform, AudioTransformation):
-        if selected_profile.always_include_audio_transforms:
-            return "Always included automatically for this profile."
-        return "Use the single profile-aware sentence audio transform."
-    if (
-        isinstance(transform, LLMAudioTransformation)
-        and selected_profile.always_include_audio_transforms
-    ):
-        return "Always included automatically for this profile."
-    if isinstance(transform, (LLMImagePromptTransformation, LLMImageTransformation)):
-        if not selected_profile.supports_images:
-            return "Image transforms are disabled for this profile."
-    return None
-
-
-def _resolve_transform_options_for_profile(
-    all_transformations: Dict[str, object],
-    selected_profile: LLMProfile,
-) -> Tuple[List[str], Dict[str, str], List[str]]:
-    available_names: List[str] = []
-    unavailable_reasons: Dict[str, str] = {}
-    always_included_names: List[str] = []
-
-    for name, transform in all_transformations.items():
-        if isinstance(transform, (LLMTransformation, TimestampTransformation)):
-            always_included_names.append(name)
-        if selected_profile.always_include_audio_transforms and isinstance(
-            transform, (AudioTransformation, LLMAudioTransformation)
-        ):
-            always_included_names.append(name)
-        reason = _get_unavailable_transform_reason(
-            transform_name=name,
-            transform=transform,
-            selected_profile=selected_profile,
-        )
-        if reason:
-            unavailable_reasons[name] = reason
-        else:
-            available_names.append(name)
-
-    return available_names, unavailable_reasons, always_included_names
-
-
-def _default_transform_selection(
-    available_transform_names: List[str],
-    selected_profile: LLMProfile,
-) -> List[str]:
-    preferred = list(selected_profile.default_optional_transform_names)
-    return [name for name in preferred if name in available_transform_names]
 
 
 def _render_image_preview(df_results: pd.DataFrame) -> None:
@@ -224,6 +144,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
 
     if "pipeline_category_name" not in st.session_state:
         st.session_state["pipeline_category_name"] = ""
+    pipeline_service = PipelineRunService()
 
     with col1:
         st.subheader("1. Profile")
@@ -248,15 +169,14 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
         st.caption(f"Auto source language: `{llm_source_language}`")
         st.session_state["llm_profile_id_ui"] = llm_profile_id
 
-        (
-            available_transform_names,
-            unavailable_transform_reasons,
-            always_included_transform_names,
-        ) = (
-            _resolve_transform_options_for_profile(
-                all_transformations=all_transformations,
-                selected_profile=selected_profile,
-            )
+        transform_options = pipeline_service.resolve_transform_options_for_profile(
+            all_transformations=all_transformations,
+            selected_profile=selected_profile,
+        )
+        available_transform_names = transform_options.available_transform_names
+        unavailable_transform_reasons = transform_options.unavailable_transform_reasons
+        always_included_transform_names = (
+            transform_options.always_included_transform_names
         )
 
         profile_transform_map: Dict[str, List[str]] = st.session_state[
@@ -283,7 +203,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
                 name for name in previous_selection if name in available_transform_names
             ]
             if not selected_for_profile:
-                selected_for_profile = _default_transform_selection(
+                selected_for_profile = pipeline_service.default_transform_selection(
                     available_transform_names,
                     selected_profile,
                 )
@@ -322,11 +242,11 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
                     st.caption(f"`{transform_name}`: {reason}")
 
         # Build executable transformations: always-included + user-selected optional ones.
-        ordered_transform_names: List[str] = []
-        for name in always_included_transform_names + selected_transform_names:
-            if name in all_transformations and name not in ordered_transform_names:
-                ordered_transform_names.append(name)
-        selected_transforms = [all_transformations[name] for name in ordered_transform_names]
+        ordered_transform_names = pipeline_service.build_ordered_transform_names(
+            all_transformations=all_transformations,
+            always_included_transform_names=always_included_transform_names,
+            selected_transform_names=selected_transform_names,
+        )
 
     with col2:
         st.subheader("3. Input Words")
@@ -340,29 +260,15 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
     st.divider()
 
     if st.button("🚀 Run Pipeline", type="primary", use_container_width=True):
-        if not selected_transforms:
-            st.warning("No runnable transformations are configured.")
+        selection_error = pipeline_service.validate_transform_run_selection(
+            all_transformations=all_transformations,
+            ordered_transform_names=ordered_transform_names,
+            selected_profile=selected_profile,
+        )
+        if selection_error:
+            st.warning(selection_error)
         elif not word_input:
             st.warning("Please input at least one word.")
-        elif any(
-            isinstance(transform, (LLMImagePromptTransformation, LLMImageTransformation))
-            for transform in selected_transforms
-        ) and not selected_profile.supports_images:
-            st.warning(
-                f"Profile '{selected_profile.display_name}' does not support image transforms. "
-                "Deselect image prompt/renderer for this profile."
-            )
-        elif any(
-            isinstance(transform, LLMImageTransformation)
-            for transform in selected_transforms
-        ) and not any(
-            isinstance(transform, LLMImagePromptTransformation)
-            for transform in selected_transforms
-        ):
-            st.warning(
-                "LLM Image Renderer requires LLM Image Prompt (Visual Translator). "
-                "Select both stages."
-            )
         else:
             try:
                 # Validate and sanitize word input
@@ -377,39 +283,16 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
                     logger.info(
                         f"Starting pipeline run for {len(words_to_process)} words via Streamlit."
                     )
-                    runtime_transformations = all_transformations
-                    if callable(transform_factory):
-                        runtime_transformations = transform_factory()
-
-                    missing_runtime_transforms = [
-                        name
-                        for name in ordered_transform_names
-                        if name not in runtime_transformations
-                    ]
-                    if missing_runtime_transforms:
-                        raise ValueError(
-                            "Runtime transform builder is missing configured transform(s): "
-                            + ", ".join(missing_runtime_transforms)
-                        )
-
-                    selected_transforms = [
-                        runtime_transformations[name] for name in ordered_transform_names
-                    ]
-                    for transform in selected_transforms:
-                        if hasattr(transform, "source_language"):
-                            transform.source_language = llm_source_language
-                        if isinstance(transform, LLMTransformation):
-                            transform.profile_id = llm_profile_id
-                            transform.profile = get_llm_profile(llm_profile_id)
-                        if isinstance(transform, LLMAudioTransformation):
-                            transform.profile_id = llm_profile_id
-
-                    # Initialize the pipeline
-                    pipeline = TransformationPipeline(
-                        db_client=pipeline_db_client,
-                        transformations=selected_transforms,
+                    prepared_run = pipeline_service.prepare_pipeline_run(
+                        pipeline_db_client=pipeline_db_client,
+                        all_transformations=all_transformations,
+                        ordered_transform_names=ordered_transform_names,
+                        llm_profile_id=llm_profile_id,
+                        llm_source_language=llm_source_language,
+                        transform_factory=transform_factory,
                         table_name="hanzi_processing",
                     )
+                    pipeline = prepared_run.pipeline
                     total_transform_steps = max(
                         1,
                         len(pipeline.main_transformations)
@@ -491,12 +374,14 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
                                 f"Total duration: {total_duration:.2f}s"
                             )
 
-                    # Run the pipeline
-                    df_results = pipeline.transform_data_with_progress(
+                    run_result = pipeline_service.execute_pipeline_run(
+                        prepared_run=prepared_run,
                         words=words_to_process,
-                        dev_mode=False,
+                        llm_profile_id=llm_profile_id,
                         progress_callback=on_pipeline_progress,
+                        dev_mode=False,
                     )
+                    df_results = run_result.df_results
                     if step_timings:
                         slowest_steps = (
                             pd.DataFrame(step_timings)
@@ -510,10 +395,7 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
                             hide_index=True,
                         )
 
-                saved_results_csv = save_pipeline_results_csv(
-                    df_results=df_results,
-                    profile_id=llm_profile_id,
-                )
+                saved_results_csv = run_result.saved_results_csv
                 st.success("Pipeline run complete!")
                 st.info(
                     "Saved results to `{}`".format(saved_results_csv.as_posix())
@@ -589,15 +471,11 @@ def render_pipeline_tab(pipeline_db_client, all_transformations, transform_facto
             else:
                 try:
                     with st.spinner(f"Adding category '{category_name}'..."):
-                        # Re-init pipeline for the .transform_categories method
-                        pipeline = TransformationPipeline(
-                            db_client=pipeline_db_client,
-                            transformations=[],  # No transforms needed
+                        df_categorized = pipeline_service.add_category_to_results(
+                            pipeline_db_client=pipeline_db_client,
+                            df_results=df_results,
+                            category=category_name.strip(),
                             table_name="hanzi_processing",
-                        )
-
-                        df_categorized = pipeline.transform_categories(
-                            df_results, category=category_name.strip()
                         )
 
                     st.success(

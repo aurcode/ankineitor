@@ -34,7 +34,7 @@ The project is structured as a data processing pipeline with a web interface.
 ### Prerequisites
 
 - [Docker](https://www.docker.com/get-started) and [Docker Compose](https://docs.docker.com/compose/install/)
-- Python 3.8+
+- Python 3.9+
 
 ### Installation
 
@@ -55,6 +55,13 @@ The project is structured as a data processing pipeline with a web interface.
 3.  **Access the application:**
     Open your web browser and navigate to `http://localhost:8502`.
 
+### Run Tests Locally
+
+```bash
+pip install -r requirements.txt -r test_requirements.txt
+pytest
+```
+
 ### Usage
 
 1.  **Run the Pipeline**:
@@ -73,7 +80,7 @@ The project is structured as a data processing pipeline with a web interface.
 
 ## 🔧 Configuration
 
-The core of the deck generation is controlled by `services/Processing/config.yaml`. This file allows you to define:
+The core of the deck generation is controlled by `app/configs/config.yaml`. This file allows you to define:
 - The Anki card model (fields, templates).
 - CSS styling for your cards.
 - How media files (audio, images) are handled.

@@ -7,7 +7,32 @@ name = "ankineitor"
 version = "0.1.0"
 description = "A data processing pipeline and Streamlit UI for Anki cards."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
+dependencies = [
+    "deep-translator",
+    "genanki",
+    "google-auth",
+    "google-genai",
+    "gTTS",
+    "jieba",
+    "loguru",
+    "pandas",
+    "pdf2image",
+    "pinyin",
+    "pydantic",
+    "pydantic-settings",
+    "pydub",
+    "pypdf",
+    "PyYAML",
+    "python-dotenv",
+    "pytesseract",
+    "sqlalchemy",
+    "streamlit",
+    "tabulate",
+    "tenacity",
+    "tqdm",
+    "unstructured",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
