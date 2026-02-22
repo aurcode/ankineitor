@@ -140,6 +140,7 @@ class BackgroundJobStatus(models.TextChoices):
     RUNNING = "running", "Running"
     SUCCESS = "success", "Success"
     ERROR = "error", "Error"
+    CANCELED = "canceled", "Canceled"
 
 
 class BackgroundJob(models.Model):
@@ -157,6 +158,8 @@ class BackgroundJob(models.Model):
     )
     input_payload = models.JSONField(default=dict)
     result_payload = models.JSONField(default=dict)
+    csv_output_path = models.TextField(blank=True)
+    csv_download_name = models.CharField(max_length=256, blank=True)
     error_message = models.TextField(blank=True)
     celery_task_id = models.CharField(max_length=128, blank=True)
     last_event_sequence = models.PositiveIntegerField(default=0)

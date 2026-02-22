@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from celery import current_app
 from django.contrib.auth import authenticate
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
@@ -17,6 +18,7 @@ from ankineitor.security.exceptions import InvalidFileError, ValidationError
 
 from .models import (
     BackgroundJob,
+    BackgroundJobStatus,
     BackgroundJobType,
     FlashcardDataset,
     GeneratedAnkiDeck,
@@ -36,6 +38,7 @@ from .serializers import (
 )
 from .services import apply_category_to_run, build_pipeline_options, resolve_ordered_transform_names
 from .tab_services import (
+    cancel_background_job_for_owner,
     create_anki_background_job,
     create_flashcard_dataset_from_saved,
     create_flashcard_dataset_from_upload,
@@ -44,9 +47,12 @@ from .tab_services import (
     get_background_job_events_for_owner,
     get_flashcard_card,
     get_flashcard_dataset_summary,
+    list_background_jobs_for_owner,
     list_flashcard_saved_files,
     list_flashcard_saved_profiles,
+    resolve_background_job_csv_path,
     resolve_anki_artifact_path,
+    retry_background_job_for_owner,
     serialize_background_job,
 )
 from .tasks import (
@@ -72,6 +78,14 @@ def _serialize_background_job_with_urls(job: BackgroundJob, request) -> dict:
             result_payload["download_url"] = request.build_absolute_uri(
                 reverse("anki-deck-download", kwargs={"artifact_id": artifact_id})
             )
+    if str(job.csv_output_path or "").strip():
+        csv_url = request.build_absolute_uri(
+            reverse("background-job-results-csv", kwargs={"job_id": job.id})
+        )
+        payload["csv_url"] = csv_url
+        result_payload.setdefault("csv_url", csv_url)
+    else:
+        payload["csv_url"] = None
 
     payload["result_payload"] = result_payload
     return payload
@@ -336,10 +350,79 @@ class AnkiDeckGenerateView(APIView):
         )
 
 
+class BackgroundJobListView(APIView):
+    def get(self, request):
+        raw_job_type = str(request.query_params.get("job_type", "") or "").strip().lower()
+        job_type = raw_job_type or None
+        if job_type and job_type not in {BackgroundJobType.ANKI_DECK, BackgroundJobType.WORD_EXTRACTOR}:
+            return Response(
+                {"detail": "job_type must be one of: anki_deck, word_extractor."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            limit = int(request.query_params.get("limit", 20) or 20)
+        except Exception:
+            return Response({"detail": "limit must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        jobs = list_background_jobs_for_owner(
+            owner=request.user,
+            job_type=job_type,
+            limit=limit,
+        )
+        return Response({"jobs": [_serialize_background_job_with_urls(job, request) for job in jobs]})
+
+
 class BackgroundJobDetailView(APIView):
     def get(self, request, job_id: str):
         job = get_object_or_404(BackgroundJob, pk=job_id, owner=request.user)
         return Response({"job": _serialize_background_job_with_urls(job, request)})
+
+
+class BackgroundJobCancelView(APIView):
+    def post(self, request, job_id: str):
+        try:
+            job = cancel_background_job_for_owner(owner=request.user, job_id=job_id)
+        except BackgroundJob.DoesNotExist:
+            raise Http404("Job not found.")
+
+        if job.celery_task_id and job.status == BackgroundJobStatus.CANCELED:
+            try:
+                current_app.control.revoke(job.celery_task_id, terminate=False)
+            except Exception:
+                pass
+
+        return Response({"job": _serialize_background_job_with_urls(job, request)})
+
+
+class BackgroundJobRetryView(APIView):
+    def post(self, request, job_id: str):
+        try:
+            job = retry_background_job_for_owner(owner=request.user, job_id=job_id)
+        except BackgroundJob.DoesNotExist:
+            raise Http404("Job not found.")
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if job.job_type == BackgroundJobType.ANKI_DECK:
+            task = run_anki_background_job_task.delay(str(job.id))
+        elif job.job_type == BackgroundJobType.WORD_EXTRACTOR:
+            task = run_word_extractor_background_job_task.delay(str(job.id))
+        else:
+            return Response(
+                {"detail": f"Unsupported job type '{job.job_type}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        job.celery_task_id = str(task.id)
+        job.save(update_fields=["celery_task_id", "updated_at"])
+
+        return Response(
+            {
+                "job": _serialize_background_job_with_urls(job, request),
+                "events": get_background_job_events_for_owner(owner=request.user, job_id=str(job.id)),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class BackgroundJobEventsView(APIView):
@@ -350,6 +433,26 @@ class BackgroundJobEventsView(APIView):
                 "job_id": job_id,
                 "events": get_background_job_events_for_owner(owner=request.user, job_id=job_id),
             }
+        )
+
+
+class BackgroundJobResultsCsvView(APIView):
+    def get(self, request, job_id: str):
+        job = get_object_or_404(BackgroundJob, pk=job_id, owner=request.user)
+
+        try:
+            csv_path = resolve_background_job_csv_path(job)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+        if not csv_path.exists() or not csv_path.is_file():
+            raise Http404("CSV file not found.")
+
+        return FileResponse(
+            open(csv_path, "rb"),
+            as_attachment=True,
+            filename=job.csv_download_name or csv_path.name,
+            content_type="text/csv",
         )
 
 

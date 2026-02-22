@@ -5,8 +5,12 @@ from .views import (
     AnkiDeckGenerateView,
     AnkiPresetsView,
     AuthTokenView,
+    BackgroundJobCancelView,
     BackgroundJobDetailView,
     BackgroundJobEventsView,
+    BackgroundJobListView,
+    BackgroundJobResultsCsvView,
+    BackgroundJobRetryView,
     FlashcardDatasetCardView,
     FlashcardDatasetFromSavedView,
     FlashcardDatasetSummaryView,
@@ -85,6 +89,11 @@ urlpatterns = [
         name="word-extractor-analyze",
     ),
     re_path(
+        r"^jobs/?$",
+        BackgroundJobListView.as_view(),
+        name="background-job-list",
+    ),
+    re_path(
         r"^jobs/(?P<job_id>[0-9a-fA-F-]+)/?$",
         BackgroundJobDetailView.as_view(),
         name="background-job-detail",
@@ -93,5 +102,20 @@ urlpatterns = [
         r"^jobs/(?P<job_id>[0-9a-fA-F-]+)/events/?$",
         BackgroundJobEventsView.as_view(),
         name="background-job-events",
+    ),
+    re_path(
+        r"^jobs/(?P<job_id>[0-9a-fA-F-]+)/cancel/?$",
+        BackgroundJobCancelView.as_view(),
+        name="background-job-cancel",
+    ),
+    re_path(
+        r"^jobs/(?P<job_id>[0-9a-fA-F-]+)/retry/?$",
+        BackgroundJobRetryView.as_view(),
+        name="background-job-retry",
+    ),
+    re_path(
+        r"^jobs/(?P<job_id>[0-9a-fA-F-]+)/results/csv/?$",
+        BackgroundJobResultsCsvView.as_view(),
+        name="background-job-results-csv",
     ),
 ]

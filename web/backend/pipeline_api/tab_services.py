@@ -18,6 +18,7 @@ from channels.layers import get_channel_layer
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from loguru import logger
 
 from ankineitor.common.pipeline_result_store import (
     list_saved_csv_files_for_profile,
@@ -899,12 +900,26 @@ def job_group_name(job_id: str) -> str:
     return f"{JOB_GROUP_PREFIX}{job_id}"
 
 
+class BackgroundJobCanceledError(RuntimeError):
+    pass
+
+
+TERMINAL_BACKGROUND_JOB_STATUSES = {
+    BackgroundJobStatus.SUCCESS,
+    BackgroundJobStatus.ERROR,
+    BackgroundJobStatus.CANCELED,
+}
+
+
 def serialize_background_job(job: BackgroundJob) -> Dict[str, Any]:
     return {
         "id": str(job.id),
         "job_type": job.job_type,
         "status": job.status,
         "result_payload": dict(job.result_payload or {}),
+        "csv_output_path": job.csv_output_path,
+        "csv_download_name": job.csv_download_name,
+        "celery_task_id": job.celery_task_id,
         "error_message": job.error_message,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
@@ -943,13 +958,20 @@ def record_background_job_event(job_id: str, payload: Dict[str, Any]) -> Backgro
     channel_layer = get_channel_layer()
     if channel_layer is not None:
         outbound = serialize_background_job_event(event)
-        async_to_sync(channel_layer.group_send)(
-            job_group_name(str(job_id)),
-            {
-                "type": "background.job.event",
-                "payload": outbound,
-            },
-        )
+        try:
+            async_to_sync(channel_layer.group_send)(
+                job_group_name(str(job_id)),
+                {
+                    "type": "background.job.event",
+                    "payload": outbound,
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to send websocket event for background job {}: {}",
+                job_id,
+                exc,
+            )
     return event
 
 
@@ -974,6 +996,108 @@ def _resolve_workspace_path(path_value: str) -> Path:
     if PROJECT_ROOT.resolve() not in resolved.parents:
         raise ValueError("Path is outside workspace.")
     return resolved
+
+
+def resolve_background_job_csv_path(job: BackgroundJob) -> Path:
+    if not str(job.csv_output_path or "").strip():
+        raise ValueError("CSV output is not available for this job.")
+    return _resolve_workspace_path(str(job.csv_output_path))
+
+
+def list_background_jobs_for_owner(
+    *,
+    owner,
+    job_type: Optional[str] = None,
+    limit: int = 20,
+) -> List[BackgroundJob]:
+    safe_limit = max(1, min(int(limit or 20), 100))
+    queryset = BackgroundJob.objects.filter(owner=owner)
+    normalized_job_type = str(job_type or "").strip().lower()
+    if normalized_job_type:
+        queryset = queryset.filter(job_type=normalized_job_type)
+    return list(queryset.order_by("-created_at")[:safe_limit])
+
+
+def _clone_json_payload(payload: Any) -> Dict[str, Any]:
+    try:
+        raw = json.loads(json.dumps(payload or {}))
+        if isinstance(raw, dict):
+            return raw
+    except Exception:
+        pass
+    return dict(payload or {})
+
+
+def retry_background_job_for_owner(*, owner, job_id: str) -> BackgroundJob:
+    original = BackgroundJob.objects.get(pk=job_id, owner=owner)
+    if original.status not in {BackgroundJobStatus.ERROR, BackgroundJobStatus.CANCELED}:
+        raise ValueError("Only failed or canceled jobs can be retried.")
+
+    retried_job = BackgroundJob.objects.create(
+        owner=owner,
+        job_type=original.job_type,
+        status=BackgroundJobStatus.QUEUED,
+        input_payload=_clone_json_payload(original.input_payload),
+    )
+    record_background_job_event(
+        str(retried_job.id),
+        {
+            "event": "job_queued",
+            "job_type": retried_job.job_type,
+            "retry_of_job_id": str(original.id),
+        },
+    )
+    return retried_job
+
+
+def cancel_background_job_for_owner(*, owner, job_id: str) -> BackgroundJob:
+    with transaction.atomic():
+        job = BackgroundJob.objects.select_for_update().get(pk=job_id, owner=owner)
+        if job.status in TERMINAL_BACKGROUND_JOB_STATUSES:
+            return job
+
+        job.status = BackgroundJobStatus.CANCELED
+        job.completed_at = timezone.now()
+        job.error_message = "Canceled by user."
+        job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+
+    record_background_job_event(
+        str(job.id),
+        {
+            "event": "job_canceled",
+            "job_type": job.job_type,
+        },
+    )
+    return job
+
+
+def _ensure_job_not_canceled(job_id: str) -> None:
+    current_status = (
+        BackgroundJob.objects.filter(pk=job_id).values_list("status", flat=True).first()
+    )
+    if current_status == BackgroundJobStatus.CANCELED:
+        raise BackgroundJobCanceledError("Job canceled by user.")
+
+
+def _persist_word_extractor_csv(job: BackgroundJob, result: Dict[str, Any]) -> Tuple[str, str]:
+    output_dir = PROJECT_ROOT / "output" / "word_extractor"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    csv_file_name = f"word_extractor_{job.id}.csv"
+    csv_path = output_dir / csv_file_name
+
+    final_rows = result.get("final_words")
+    if isinstance(final_rows, list):
+        final_df = pd.DataFrame(final_rows)
+    else:
+        final_df = pd.DataFrame()
+
+    final_df.to_csv(csv_path, index=False)
+    try:
+        csv_relative = str(csv_path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except Exception:
+        csv_relative = csv_path.as_posix()
+    return csv_relative, csv_file_name
 
 
 def create_anki_background_job(
@@ -1069,11 +1193,16 @@ def create_word_extractor_background_job(
 
 def run_anki_background_job(job_id: str) -> None:
     job = BackgroundJob.objects.get(pk=job_id, job_type=BackgroundJobType.ANKI_DECK)
+    if job.status == BackgroundJobStatus.CANCELED:
+        return
+
     job.status = BackgroundJobStatus.RUNNING
     job.started_at = timezone.now()
     job.completed_at = None
     job.error_message = ""
     job.result_payload = {}
+    job.csv_output_path = ""
+    job.csv_download_name = ""
     job.last_event_sequence = 0
     job.save(
         update_fields=[
@@ -1082,6 +1211,8 @@ def run_anki_background_job(job_id: str) -> None:
             "completed_at",
             "error_message",
             "result_payload",
+            "csv_output_path",
+            "csv_download_name",
             "last_event_sequence",
             "updated_at",
         ]
@@ -1093,6 +1224,7 @@ def run_anki_background_job(job_id: str) -> None:
         payload = dict(job.input_payload or {})
         csv_path = _resolve_workspace_path(str(payload.get("csv_path", "")))
         csv_bytes = csv_path.read_bytes()
+        _ensure_job_not_canceled(str(job.id))
         record_background_job_event(
             str(job.id),
             {
@@ -1109,6 +1241,7 @@ def run_anki_background_job(job_id: str) -> None:
             deck_name=str(payload.get("deck_name", "My Anki Deck")),
             config_payload=dict(payload.get("config") or {}),
         )
+        _ensure_job_not_canceled(str(job.id))
         result_payload = {
             "artifact_id": str(artifact.id),
             "deck_name": artifact.deck_name,
@@ -1130,6 +1263,21 @@ def run_anki_background_job(job_id: str) -> None:
                 "result": result_payload,
             },
         )
+    except BackgroundJobCanceledError:
+        latest_job = BackgroundJob.objects.get(pk=job_id)
+        if latest_job.status != BackgroundJobStatus.CANCELED:
+            latest_job.status = BackgroundJobStatus.CANCELED
+            latest_job.completed_at = timezone.now()
+            latest_job.error_message = "Canceled by user."
+            latest_job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+            record_background_job_event(
+                str(latest_job.id),
+                {
+                    "event": "job_canceled",
+                    "job_type": latest_job.job_type,
+                },
+            )
+        return
     except Exception as exc:
         job.status = BackgroundJobStatus.ERROR
         job.completed_at = timezone.now()
@@ -1148,11 +1296,16 @@ def run_anki_background_job(job_id: str) -> None:
 
 def run_word_extractor_background_job(job_id: str) -> None:
     job = BackgroundJob.objects.get(pk=job_id, job_type=BackgroundJobType.WORD_EXTRACTOR)
+    if job.status == BackgroundJobStatus.CANCELED:
+        return
+
     job.status = BackgroundJobStatus.RUNNING
     job.started_at = timezone.now()
     job.completed_at = None
     job.error_message = ""
     job.result_payload = {}
+    job.csv_output_path = ""
+    job.csv_download_name = ""
     job.last_event_sequence = 0
     job.save(
         update_fields=[
@@ -1161,6 +1314,8 @@ def run_word_extractor_background_job(job_id: str) -> None:
             "completed_at",
             "error_message",
             "result_payload",
+            "csv_output_path",
+            "csv_download_name",
             "last_event_sequence",
             "updated_at",
         ]
@@ -1177,6 +1332,7 @@ def run_word_extractor_background_job(job_id: str) -> None:
             name = str(file_row.get("name", "")).strip()
             file_path = _resolve_workspace_path(str(file_row.get("path", "")))
             uploaded_files.append((name or file_path.name, file_path.read_bytes()))
+        _ensure_job_not_canceled(str(job.id))
 
         record_background_job_event(
             str(job.id),
@@ -1193,18 +1349,53 @@ def run_word_extractor_background_job(job_id: str) -> None:
             selected_hsk_levels=list(payload.get("selected_hsk_levels") or []),
             min_frequency=int(payload.get("min_frequency", 2) or 2),
         )
+        _ensure_job_not_canceled(str(job.id))
+
+        csv_output_path, csv_download_name = _persist_word_extractor_csv(job, result)
+        result = {
+            **result,
+            "csv_output_path": csv_output_path,
+            "csv_download_name": csv_download_name,
+        }
         job.status = BackgroundJobStatus.SUCCESS
         job.completed_at = timezone.now()
         job.result_payload = result
-        job.save(update_fields=["status", "completed_at", "result_payload", "updated_at"])
+        job.csv_output_path = csv_output_path
+        job.csv_download_name = csv_download_name
+        job.save(
+            update_fields=[
+                "status",
+                "completed_at",
+                "result_payload",
+                "csv_output_path",
+                "csv_download_name",
+                "updated_at",
+            ]
+        )
         record_background_job_event(
             str(job.id),
             {
                 "event": "job_complete",
                 "job_type": job.job_type,
                 "summary": dict(result.get("summary") or {}),
+                "csv_download_name": csv_download_name,
             },
         )
+    except BackgroundJobCanceledError:
+        latest_job = BackgroundJob.objects.get(pk=job_id)
+        if latest_job.status != BackgroundJobStatus.CANCELED:
+            latest_job.status = BackgroundJobStatus.CANCELED
+            latest_job.completed_at = timezone.now()
+            latest_job.error_message = "Canceled by user."
+            latest_job.save(update_fields=["status", "completed_at", "error_message", "updated_at"])
+            record_background_job_event(
+                str(latest_job.id),
+                {
+                    "event": "job_canceled",
+                    "job_type": latest_job.job_type,
+                },
+            )
+        return
     except Exception as exc:
         job.status = BackgroundJobStatus.ERROR
         job.completed_at = timezone.now()
