@@ -40,9 +40,14 @@ from .serializers import (
     FlashcardCardRerunSerializer,
     FlashcardCardUpdateSerializer,
     FlashcardDatasetFromSavedSerializer,
+    GeneratedRowListQuerySerializer,
+    GeneratedRowRerunSerializer,
+    GeneratedRowUpdateSerializer,
     PipelineResultRowSerializer,
     PipelineRunCreateSerializer,
+    PipelineRunRerunBlockSerializer,
     PipelineRunSummarySerializer,
+    HIDDEN_RESULT_COLUMNS,
     WordExtractorAnalyzeSerializer,
 )
 from .services import (
@@ -58,12 +63,16 @@ from .tab_services import (
     create_flashcard_dataset_from_saved,
     create_flashcard_dataset_from_upload,
     create_word_extractor_background_job,
+    get_generated_row_detail,
     get_anki_presets,
     get_background_job_events_for_owner,
     get_flashcard_card,
     rerun_flashcard_card_generation,
+    rerun_generated_row_process,
     update_flashcard_card_fields,
+    update_generated_row_fields,
     upload_flashcard_card_custom_image,
+    upload_generated_row_custom_image,
     get_flashcard_dataset_summary,
     list_background_jobs_for_owner,
     list_flashcard_saved_files,
@@ -87,6 +96,12 @@ class PipelineResultsPagination(pagination.PageNumberPagination):
     max_page_size = 200
 
 
+class GeneratedRowsPagination(pagination.PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
 MONITORED_PIPELINE_RUN_STATUSES = {
     RunStatus.QUEUED,
     RunStatus.RUNNING,
@@ -96,6 +111,10 @@ MONITORED_PIPELINE_RUN_STATUSES = {
 MONITORED_BACKGROUND_JOB_STATUSES = {
     BackgroundJobStatus.QUEUED,
     BackgroundJobStatus.RUNNING,
+}
+BLOCK_RERUN_DEPENDENCY_RULES = {
+    "LLM Audio (Sentences)": ("LLM (Meanings/Sentences)",),
+    "LLM Image Renderer (Master Prompt)": ("LLM Image Prompt (Visual Translator)",),
 }
 
 
@@ -200,6 +219,27 @@ def _safe_text(value) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _resolve_rerun_block_order(
+    *,
+    available_transforms: list[str],
+    transform_name: str,
+) -> list[str]:
+    available = [str(name) for name in list(available_transforms or []) if str(name).strip()]
+    if transform_name not in available:
+        return []
+
+    required = {transform_name}
+    queue = [transform_name]
+    while queue:
+        current = queue.pop(0)
+        for dependency in BLOCK_RERUN_DEPENDENCY_RULES.get(current, ()):
+            if dependency in available and dependency not in required:
+                required.add(dependency)
+                queue.append(dependency)
+
+    return [name for name in available if name in required]
 
 
 def _serialize_celery_task(task_payload, *, scheduled: bool = False) -> dict:
@@ -397,6 +437,64 @@ def _attach_flashcard_media_urls(payload: dict, request) -> dict:
 
     normalized["back"] = back
     return normalized
+
+
+def _attach_generated_row_media_urls(payload: dict, request) -> dict:
+    normalized = dict(payload or {})
+    row_data = dict(normalized.get("row_data") or {})
+
+    for key, value in list(row_data.items()):
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            continue
+
+        is_audio_field = key == "audio" or (key.startswith("sentence_") and key.endswith("_audio"))
+        if is_audio_field:
+            audio_url = _build_flashcard_asset_url(request, raw_value)
+            if audio_url:
+                row_data[key] = audio_url
+            continue
+
+        if key == "picture":
+            picture_url = _build_flashcard_asset_url(request, raw_value)
+            if picture_url:
+                row_data["picture"] = picture_url
+                row_data["picture_url"] = picture_url
+            elif raw_value.lower().startswith(("http://", "https://", "data:")):
+                row_data["picture_url"] = raw_value
+
+    normalized["row_data"] = row_data
+    card_payload = normalized.get("card")
+    if isinstance(card_payload, dict):
+        normalized["card"] = _attach_flashcard_media_urls(card_payload, request)
+    return normalized
+
+
+def _serialize_generated_row_summary(row: PipelineResultRow, request) -> dict:
+    row_data = dict(row.row_data or {})
+    profile_id = _safe_text(row_data.get("profile_id")) or _safe_text(row.run.profile_id)
+    picture = _safe_text(row_data.get("picture"))
+    picture_url = _build_flashcard_asset_url(request, picture) if picture else ""
+    if picture_url:
+        picture = picture_url
+
+    payload = {
+        "row_id": int(row.id),
+        "run_id": str(row.run_id),
+        "run_status": row.run.status,
+        "profile_id": profile_id,
+        "row_index": int(row.row_index or 0),
+        "word": _safe_text(row.word),
+        "created_at": row.created_at.isoformat() if row.created_at else "",
+        "meaning_english": _safe_text(row_data.get("meaning_english"))
+        or _safe_text(row_data.get("detailed_explanation_english")),
+        "meaning_spanish": _safe_text(row_data.get("meaning_spanish"))
+        or _safe_text(row_data.get("detailed_explanation_spanish")),
+        "picture": picture,
+        "picture_url": picture,
+        "image_render_status": _safe_text(row_data.get("image_render_status")),
+    }
+    return payload
 
 
 class AuthTokenView(APIView):
@@ -686,6 +784,59 @@ class PipelineRunDetailView(APIView):
         return Response(PipelineRunSummarySerializer(run).data)
 
 
+class PipelineRunRerunBlockView(APIView):
+    def post(self, request, run_id: str):
+        source_run = get_object_or_404(PipelineRun, pk=run_id, owner=request.user)
+        serializer = PipelineRunRerunBlockSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        transform_name = str(serializer.validated_data["transform_name"]).strip()
+        if not transform_name:
+            return Response(
+                {"detail": "transform_name is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if transform_name not in list(source_run.ordered_transform_names or []):
+            return Response(
+                {"detail": f"Unknown transform '{transform_name}' for this run."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        words = list(source_run.input_words or [])
+        if not words:
+            return Response(
+                {"detail": "Selected run has no input words to rerun."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ordered_transform_names = _resolve_rerun_block_order(
+            available_transforms=list(source_run.ordered_transform_names or []),
+            transform_name=transform_name,
+        )
+        if not ordered_transform_names:
+            return Response(
+                {"detail": f"Unable to build rerun order for transform '{transform_name}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        selected_transform_names = [transform_name]
+
+        rerun = PipelineRun.objects.create(
+            owner=request.user,
+            profile_id=source_run.profile_id,
+            source_language=source_run.source_language,
+            selected_transform_names=selected_transform_names,
+            ordered_transform_names=ordered_transform_names,
+            input_words=words,
+            total_input_words=len(words),
+        )
+
+        task = run_pipeline_task.delay(str(rerun.id))
+        rerun.celery_task_id = str(task.id)
+        rerun.save(update_fields=["celery_task_id", "updated_at"])
+
+        return Response(PipelineRunSummarySerializer(rerun).data, status=status.HTTP_201_CREATED)
+
+
 class PipelineRunResultsView(APIView):
     pagination_class = PipelineResultsPagination
 
@@ -704,7 +855,11 @@ class PipelineRunResultsView(APIView):
         first_row = queryset.first()
         columns = []
         if first_row and isinstance(first_row.row_data, dict):
-            columns = list(first_row.row_data.keys())
+            columns = [
+                str(column)
+                for column in first_row.row_data.keys()
+                if str(column) not in HIDDEN_RESULT_COLUMNS
+            ]
         if "timestamp" not in columns:
             columns.append("timestamp")
 
@@ -777,6 +932,117 @@ class PipelineRunAddCategoryView(APIView):
                 "updated_rows": result["updated_rows"],
             }
         )
+
+
+class GeneratedRowListView(APIView):
+    pagination_class = GeneratedRowsPagination
+
+    def get(self, request):
+        serializer = GeneratedRowListQuerySerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        filters = serializer.validated_data
+
+        queryset = PipelineResultRow.objects.filter(run__owner=request.user).select_related("run")
+        search_term = _safe_text(filters.get("search"))
+        if search_term:
+            queryset = queryset.filter(word__icontains=search_term)
+
+        profile_id = _safe_text(filters.get("profile_id"))
+        if profile_id:
+            queryset = queryset.filter(run__profile_id=profile_id)
+
+        run_id = filters.get("run_id")
+        if run_id:
+            queryset = queryset.filter(run_id=run_id)
+
+        queryset = queryset.order_by("-created_at", "-id")
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request)
+        results = [_serialize_generated_row_summary(row, request) for row in page]
+        return Response(
+            {
+                "count": paginator.page.paginator.count,
+                "next": paginator.get_next_link(),
+                "previous": paginator.get_previous_link(),
+                "results": results,
+            }
+        )
+
+
+class GeneratedRowDetailView(APIView):
+    def get(self, request, row_id: int):
+        row = get_object_or_404(PipelineResultRow.objects.select_related("run"), pk=row_id, run__owner=request.user)
+        payload = get_generated_row_detail(row_id=int(row.id), owner=request.user)
+        return Response({"row": _attach_generated_row_media_urls(payload, request)})
+
+
+class GeneratedRowUpdateView(APIView):
+    def post(self, request, row_id: int):
+        serializer = GeneratedRowUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        row = get_object_or_404(PipelineResultRow.objects.select_related("run"), pk=row_id, run__owner=request.user)
+        try:
+            payload = update_generated_row_fields(
+                row_id=int(row.id),
+                owner=request.user,
+                updates=serializer.validated_data["updates"],
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"row": _attach_generated_row_media_urls(payload, request)})
+
+
+class GeneratedRowRerunView(APIView):
+    def post(self, request, row_id: int):
+        serializer = GeneratedRowRerunSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        row = get_object_or_404(PipelineResultRow.objects.select_related("run"), pk=row_id, run__owner=request.user)
+        try:
+            payload = rerun_generated_row_process(
+                row_id=int(row.id),
+                owner=request.user,
+                process=serializer.validated_data["process"],
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            logger.exception("Failed to rerun generated row {} process: {}", row_id, exc)
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "row": _attach_generated_row_media_urls(payload, request),
+                "rerun_process": payload.get("rerun_process", ""),
+                "applied_transforms": payload.get("applied_transforms", []),
+            }
+        )
+
+
+class GeneratedRowImageUploadView(APIView):
+    def post(self, request, row_id: int):
+        image_file = request.FILES.get("image_file")
+        if image_file is None:
+            return Response(
+                {"detail": "image_file is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        row = get_object_or_404(PipelineResultRow.objects.select_related("run"), pk=row_id, run__owner=request.user)
+        try:
+            payload = upload_generated_row_custom_image(
+                row_id=int(row.id),
+                owner=request.user,
+                file_name=image_file.name,
+                file_bytes=image_file.read(),
+            )
+        except (ValueError, ValidationError, InvalidFileError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"row": _attach_generated_row_media_urls(payload, request)})
 
 
 class AnkiPresetsView(APIView):

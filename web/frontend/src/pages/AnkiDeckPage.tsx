@@ -322,7 +322,11 @@ export function AnkiDeckPage() {
           rows={16}
         />
 
-        {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
+        {errorMessage ? (
+          <p className="error-message" role="alert">
+            {errorMessage}
+          </p>
+        ) : null}
 
         <button type="button" className="primary" disabled={isSubmitting} onClick={handleGenerate}>
           {isSubmitting ? "Queuing..." : "Generate Deck"}
@@ -334,29 +338,36 @@ export function AnkiDeckPage() {
         {jobHistory.length === 0 ? (
           <p className="muted">No jobs yet.</p>
         ) : (
-          <ul className="plain-list">
+          <ul className="plain-list job-history-list">
             {jobHistory.map((historyJob) => (
-              <li key={historyJob.id}>
-                <strong>{historyJob.status}</strong> - {formatTimestamp(historyJob.created_at)} -{" "}
-                <code>{historyJob.id}</code>{" "}
-                <span className="muted">({formatPercent(historyJob.progress_ratio)})</span>{" "}
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => void handleSelectJob(historyJob.id)}
-                >
-                  Open
-                </button>{" "}
-                {(historyJob.status === "error" || historyJob.status === "canceled") ? (
+              <li key={historyJob.id} className="job-history-item">
+                <div className="job-history-main">
+                  <strong className="status-chip" data-status={historyJob.status}>
+                    {historyJob.status}
+                  </strong>
+                  <span>{formatTimestamp(historyJob.created_at)}</span>
+                  <code>{historyJob.id}</code>
+                  <span className="muted">({formatPercent(historyJob.progress_ratio)})</span>
+                </div>
+                <div className="inline-controls wrap">
                   <button
                     type="button"
                     className="secondary"
-                    disabled={retryingJobId === historyJob.id}
-                    onClick={() => void handleRetry(historyJob.id)}
+                    onClick={() => void handleSelectJob(historyJob.id)}
                   >
-                    {retryingJobId === historyJob.id ? "Retrying..." : "Retry"}
+                    Open
                   </button>
-                ) : null}
+                  {(historyJob.status === "error" || historyJob.status === "canceled") ? (
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={retryingJobId === historyJob.id}
+                      onClick={() => void handleRetry(historyJob.id)}
+                    >
+                      {retryingJobId === historyJob.id ? "Retrying..." : "Retry"}
+                    </button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
@@ -372,7 +383,11 @@ export function AnkiDeckPage() {
           <p className="muted">Status: {job.status}</p>
           <progress value={Math.max(0, Math.min(100, Math.round((job.progress_ratio || 0) * 100)))} max={100} />
           <p className="muted">{job.status_text || "In progress..."}</p>
-          {job.error_message ? <p className="error-message">{job.error_message}</p> : null}
+          {job.error_message ? (
+            <p className="error-message" role="alert">
+              {job.error_message}
+            </p>
+          ) : null}
 
           {job.status === "success" && ankiResult ? (
             <div className="result-box">
@@ -397,7 +412,7 @@ export function AnkiDeckPage() {
           {events.length === 0 ? (
             <p className="muted">No events yet.</p>
           ) : (
-            <ul className="plain-list">
+            <ul className="plain-list timeline-list">
               {events.slice(-20).map((event) => (
                 <li key={`${event.job_id}:${event.sequence}`}>
                   [{event.sequence}] {String(event.payload.event || event.payload.event_type || "event")}

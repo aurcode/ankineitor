@@ -15,6 +15,10 @@ import {
   FlashcardDatasetSummary,
   FlashcardSavedFilesResponse,
   FlashcardSavedProfilesResponse,
+  GeneratedRowDetailResponse,
+  GeneratedRowMutationResponse,
+  GeneratedRowRerunProcess,
+  GeneratedRowsResponse,
   PipelineOptionsResponse,
   RunListResponse,
   RunResultsResponse,
@@ -240,6 +244,18 @@ export function getPipelineRun(runId: string): Promise<RunSummary> {
   return requestJson<RunSummary>(`/api/pipeline/runs/${runId}`);
 }
 
+export function rerunPipelineRunBlock(params: {
+  runId: string;
+  transformName: string;
+}): Promise<RunSummary> {
+  return requestJson<RunSummary>(`/api/pipeline/runs/${params.runId}/rerun-block`, {
+    method: "POST",
+    body: JSON.stringify({
+      transform_name: params.transformName,
+    }),
+  });
+}
+
 export function getPipelineRunResults(
   runId: string,
   params: { page?: number; pageSize?: number; search?: string } = {},
@@ -421,6 +437,69 @@ export function uploadFlashcardCardImage(params: {
   formData.append("image_file", params.imageFile);
   return requestFormJson<FlashcardCardMutationResponse>(
     `/api/flashcards/datasets/${params.datasetId}/card/upload-image`,
+    formData,
+  );
+}
+
+export function listGeneratedRows(params?: {
+  search?: string;
+  profileId?: string;
+  runId?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<GeneratedRowsResponse> {
+  const query = new URLSearchParams();
+  if (params?.search) {
+    query.set("search", params.search);
+  }
+  if (params?.profileId) {
+    query.set("profile_id", params.profileId);
+  }
+  if (params?.runId) {
+    query.set("run_id", params.runId);
+  }
+  if (params?.page) {
+    query.set("page", String(params.page));
+  }
+  if (params?.pageSize) {
+    query.set("page_size", String(params.pageSize));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return requestJson<GeneratedRowsResponse>(`/api/generated/rows${suffix}`);
+}
+
+export function getGeneratedRow(rowId: number): Promise<GeneratedRowDetailResponse> {
+  return requestJson<GeneratedRowDetailResponse>(`/api/generated/rows/${rowId}`);
+}
+
+export function updateGeneratedRow(params: {
+  rowId: number;
+  updates: Record<string, string | number | boolean | null>;
+}): Promise<GeneratedRowMutationResponse> {
+  return requestJson<GeneratedRowMutationResponse>(`/api/generated/rows/${params.rowId}/update`, {
+    method: "POST",
+    body: JSON.stringify({ updates: params.updates }),
+  });
+}
+
+export function rerunGeneratedRowProcess(params: {
+  rowId: number;
+  process: GeneratedRowRerunProcess;
+}): Promise<GeneratedRowMutationResponse> {
+  return requestJson<GeneratedRowMutationResponse>(`/api/generated/rows/${params.rowId}/rerun`, {
+    method: "POST",
+    body: JSON.stringify({ process: params.process }),
+  });
+}
+
+export function uploadGeneratedRowImage(params: {
+  rowId: number;
+  imageFile: File;
+}): Promise<GeneratedRowMutationResponse> {
+  const formData = new FormData();
+  formData.append("image_file", params.imageFile);
+  return requestFormJson<GeneratedRowMutationResponse>(
+    `/api/generated/rows/${params.rowId}/upload-image`,
     formData,
   );
 }

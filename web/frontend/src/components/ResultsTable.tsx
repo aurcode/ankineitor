@@ -72,7 +72,9 @@ export function ResultsTable(props: ResultsTableProps) {
           <thead>
             <tr>
               {columns.map((column) => (
-                <th key={column}>{column}</th>
+                <th key={column} scope="col">
+                  {column}
+                </th>
               ))}
             </tr>
           </thead>

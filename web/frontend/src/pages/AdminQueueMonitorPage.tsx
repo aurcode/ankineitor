@@ -227,7 +227,11 @@ export function AdminQueueMonitorPage() {
             {isLoading || isRefreshing ? "Refreshing..." : "Refresh now"}
           </button>
         </div>
-        {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
+        {errorMessage ? (
+          <p className="error-message" role="alert">
+            {errorMessage}
+          </p>
+        ) : null}
       </section>
 
       <section className="panel-block">
@@ -239,18 +243,18 @@ export function AdminQueueMonitorPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Run</th>
-                  <th>Owner</th>
-                  <th>Status</th>
-                  <th>Profile</th>
-                  <th>Transform</th>
-                  <th>Word</th>
-                  <th>Left</th>
-                  <th>Running</th>
-                  <th>Queued</th>
-                  <th>Created</th>
-                  <th>Started</th>
-                  <th>Actions</th>
+                  <th scope="col">Run</th>
+                  <th scope="col">Owner</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Profile</th>
+                  <th scope="col">Transform</th>
+                  <th scope="col">Word</th>
+                  <th scope="col">Left</th>
+                  <th scope="col">Running</th>
+                  <th scope="col">Queued</th>
+                  <th scope="col">Created</th>
+                  <th scope="col">Started</th>
+                  <th scope="col">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -324,14 +328,14 @@ export function AdminQueueMonitorPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Job</th>
-                  <th>Owner</th>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th>Progress</th>
-                  <th>Status Text</th>
-                  <th>Created</th>
-                  <th>Started</th>
+                  <th scope="col">Job</th>
+                  <th scope="col">Owner</th>
+                  <th scope="col">Type</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Progress</th>
+                  <th scope="col">Status Text</th>
+                  <th scope="col">Created</th>
+                  <th scope="col">Started</th>
                 </tr>
               </thead>
               <tbody>
@@ -355,8 +359,12 @@ export function AdminQueueMonitorPage() {
 
       <section className="panel-block">
         <h2>Celery Workers</h2>
-        {celeryError ? <p className="error-message">{celeryError}</p> : null}
-        {celeryWorkers.length === 0 ? (
+        {celeryError ? (
+          <p className="error-message" role="alert">
+            {celeryError}
+          </p>
+        ) : null}
+      {celeryWorkers.length === 0 ? (
           <p className="muted">No worker inspector data available.</p>
         ) : (
           <div className="admin-worker-grid">

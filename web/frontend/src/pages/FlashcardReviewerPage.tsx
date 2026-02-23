@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createFlashcardDatasetFromSaved,
@@ -16,6 +16,9 @@ import {
   FlashcardSavedFile,
 } from "../types/pipeline";
 
+const REVIEW_BATCH_SIZE = 5;
+const REVIEW_BATCH_PRELOAD_PAGES = 2;
+
 export function FlashcardReviewerPage() {
   const [sourceMode, setSourceMode] = useState<"saved" | "upload">("saved");
   const [profiles, setProfiles] = useState<string[]>([]);
@@ -27,7 +30,7 @@ export function FlashcardReviewerPage() {
   const [summary, setSummary] = useState<FlashcardDatasetSummary | null>(null);
   const [currentCard, setCurrentCard] = useState<FlashcardCardResponse | null>(null);
   const [profileFilter, setProfileFilter] = useState("All profiles");
-  const [showBack, setShowBack] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isSavingEdits, setIsSavingEdits] = useState(false);
   const [isRerunning, setIsRerunning] = useState(false);
@@ -39,6 +42,9 @@ export function FlashcardReviewerPage() {
   const [editVisualDescription, setEditVisualDescription] = useState("");
   const [actionMessage, setActionMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const cardCacheRef = useRef<Map<string, FlashcardCardResponse>>(new Map());
+  const inFlightCardRequestsRef = useRef<Set<string>>(new Set());
+  const hasAutoLoadedSavedDatasetRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -100,6 +106,15 @@ export function FlashcardReviewerPage() {
     }
     return ["All profiles", ...summary.available_profiles];
   }, [summary]);
+  const hasSavedProfiles = profiles.length > 0;
+  const hasSavedFiles = savedFiles.length > 0;
+  const currentProfileFilter = profileFilter === "All profiles" ? "" : profileFilter;
+
+  const resolveFilterValue = (selectedFilter: string): string =>
+    selectedFilter === "All profiles" ? "" : selectedFilter;
+
+  const buildCardCacheKey = (datasetId: string, index: number, filterValue: string): string =>
+    `${datasetId}|${filterValue}|${index}`;
 
   useEffect(() => {
     if (!currentCard) {
@@ -111,19 +126,89 @@ export function FlashcardReviewerPage() {
     setEditVisualDescription(currentCard.back.image.visual_description || "");
   }, [currentCard?.index, currentCard?.raw_row]);
 
+  const prefetchCard = async (
+    datasetId: string,
+    index: number,
+    filterValue: string,
+  ): Promise<void> => {
+    const safeIndex = Math.max(0, index);
+    const requestKey = buildCardCacheKey(datasetId, safeIndex, filterValue);
+    if (cardCacheRef.current.has(requestKey) || inFlightCardRequestsRef.current.has(requestKey)) {
+      return;
+    }
+
+    inFlightCardRequestsRef.current.add(requestKey);
+    try {
+      const payload = await getFlashcardCard({
+        datasetId,
+        index: safeIndex,
+        profileFilter: filterValue,
+      });
+      const resolvedKey = buildCardCacheKey(datasetId, payload.index, filterValue);
+      cardCacheRef.current.set(requestKey, payload);
+      cardCacheRef.current.set(resolvedKey, payload);
+    } catch {
+      // Prefetch errors should not block main reviewer flow.
+    } finally {
+      inFlightCardRequestsRef.current.delete(requestKey);
+    }
+  };
+
+  const prefetchUpcomingBatches = (
+    datasetId: string,
+    currentIndex: number,
+    totalCards: number,
+    filterValue: string,
+  ): void => {
+    for (let offset = 1; offset <= REVIEW_BATCH_PRELOAD_PAGES; offset += 1) {
+      const nextIndex = currentIndex + offset * REVIEW_BATCH_SIZE;
+      if (nextIndex >= totalCards) {
+        break;
+      }
+      void prefetchCard(datasetId, nextIndex, filterValue);
+    }
+  };
+
+  const setCurrentCardWithCache = (
+    payload: FlashcardCardResponse,
+    datasetId: string,
+    filterValue: string,
+  ): void => {
+    const resolvedKey = buildCardCacheKey(datasetId, payload.index, filterValue);
+    cardCacheRef.current.set(resolvedKey, payload);
+    setCurrentCard(payload);
+    prefetchUpcomingBatches(datasetId, payload.index, payload.total, filterValue);
+  };
+
   const loadCard = async (index: number, selectedFilter: string): Promise<void> => {
     if (!summary) {
       return;
     }
+
+    const datasetId = summary.dataset_id;
+    const filterValue = resolveFilterValue(selectedFilter);
+    const safeIndex = Math.max(0, index);
+    const cacheKey = buildCardCacheKey(datasetId, safeIndex, filterValue);
+    const cachedCard = cardCacheRef.current.get(cacheKey);
+    if (cachedCard) {
+      setCurrentCardWithCache(cachedCard, datasetId, filterValue);
+      return;
+    }
+
     const payload = await getFlashcardCard({
-      datasetId: summary.dataset_id,
-      index,
-      profileFilter: selectedFilter === "All profiles" ? "" : selectedFilter,
+      datasetId,
+      index: safeIndex,
+      profileFilter: filterValue,
     });
-    setCurrentCard(payload);
+    setCurrentCardWithCache(payload, datasetId, filterValue);
   };
 
-  const currentProfileFilter = profileFilter === "All profiles" ? "" : profileFilter;
+  const currentBatchStart = currentCard
+    ? Math.floor(currentCard.index / REVIEW_BATCH_SIZE) * REVIEW_BATCH_SIZE
+    : 0;
+  const currentBatchEnd = currentCard
+    ? Math.min(currentCard.total, currentBatchStart + REVIEW_BATCH_SIZE) - 1
+    : 0;
 
   const handleSaveEdits = async () => {
     if (!summary || !currentCard) {
@@ -145,7 +230,7 @@ export function FlashcardReviewerPage() {
         },
       });
       setSummary(payload.dataset);
-      setCurrentCard(payload.card);
+      setCurrentCardWithCache(payload.card, summary.dataset_id, currentProfileFilter);
       setActionMessage("Edits saved.");
     } catch (error) {
       setErrorMessage(String(error));
@@ -169,7 +254,7 @@ export function FlashcardReviewerPage() {
         mode,
       });
       setSummary(payload.dataset);
-      setCurrentCard(payload.card);
+      setCurrentCardWithCache(payload.card, summary.dataset_id, currentProfileFilter);
       setActionMessage(mode === "image" ? "Image generation rerun completed." : "Generation rerun completed.");
     } catch (error) {
       setErrorMessage(String(error));
@@ -193,7 +278,7 @@ export function FlashcardReviewerPage() {
         imageFile: customImageFile,
       });
       setSummary(payload.dataset);
-      setCurrentCard(payload.card);
+      setCurrentCardWithCache(payload.card, summary.dataset_id, currentProfileFilter);
       setCustomImageFile(null);
       setActionMessage("Custom image uploaded.");
     } catch (error) {
@@ -208,10 +293,16 @@ export function FlashcardReviewerPage() {
       setErrorMessage("Select a saved profile.");
       return;
     }
+    if (!selectedFileName) {
+      setErrorMessage("Select a saved CSV file.");
+      return;
+    }
 
     setIsLoading(true);
     setErrorMessage("");
     try {
+      cardCacheRef.current.clear();
+      inFlightCardRequestsRef.current.clear();
       const dataset = await createFlashcardDatasetFromSaved({
         profileId: selectedProfile,
         fileName: selectedFileName,
@@ -222,8 +313,9 @@ export function FlashcardReviewerPage() {
         datasetId: dataset.dataset_id,
         index: 0,
       });
-      setCurrentCard(firstCard);
-      setShowBack(false);
+      setCurrentCardWithCache(firstCard, dataset.dataset_id, "");
+      setIsEditMode(false);
+      setCustomImageFile(null);
     } catch (error) {
       setErrorMessage(String(error));
     } finally {
@@ -240,6 +332,8 @@ export function FlashcardReviewerPage() {
     setIsLoading(true);
     setErrorMessage("");
     try {
+      cardCacheRef.current.clear();
+      inFlightCardRequestsRef.current.clear();
       const dataset = await createFlashcardDatasetFromUpload(uploadFile);
       setSummary(dataset);
       setProfileFilter("All profiles");
@@ -247,8 +341,9 @@ export function FlashcardReviewerPage() {
         datasetId: dataset.dataset_id,
         index: 0,
       });
-      setCurrentCard(firstCard);
-      setShowBack(false);
+      setCurrentCardWithCache(firstCard, dataset.dataset_id, "");
+      setIsEditMode(false);
+      setCustomImageFile(null);
     } catch (error) {
       setErrorMessage(String(error));
     } finally {
@@ -260,28 +355,54 @@ export function FlashcardReviewerPage() {
     if (!currentCard) {
       return;
     }
-    await loadCard(Math.max(0, currentCard.index - 1), profileFilter);
-    setShowBack(false);
+    await loadCard(
+      Math.max(0, currentBatchStart - REVIEW_BATCH_SIZE),
+      profileFilter,
+    );
   };
 
   const handleNext = async () => {
     if (!currentCard) {
       return;
     }
-    await loadCard(Math.min(currentCard.total - 1, currentCard.index + 1), profileFilter);
-    setShowBack(false);
+    await loadCard(
+      Math.min(currentCard.total - 1, currentBatchStart + REVIEW_BATCH_SIZE),
+      profileFilter,
+    );
   };
 
   const handleFilterApply = async () => {
     await loadCard(0, profileFilter);
-    setShowBack(false);
   };
+
+  useEffect(() => {
+    if (sourceMode !== "saved") {
+      return;
+    }
+    if (summary || isLoading) {
+      return;
+    }
+    if (!selectedProfile || !selectedFileName) {
+      return;
+    }
+    if (hasAutoLoadedSavedDatasetRef.current) {
+      return;
+    }
+    hasAutoLoadedSavedDatasetRef.current = true;
+    void handleLoadSavedDataset();
+  }, [
+    sourceMode,
+    summary,
+    isLoading,
+    selectedProfile,
+    selectedFileName,
+  ]);
 
   return (
     <div className="workspace-page single-column">
       <header className="page-header">
         <h1>Flashcard Reviewer</h1>
-        <p>Review cards from saved pipeline CSVs or uploaded CSVs with front/back card flipping.</p>
+        <p>Review cards from saved pipeline CSVs or uploaded CSVs with front and back shown together.</p>
       </header>
 
       <section className="panel-block">
@@ -310,13 +431,21 @@ export function FlashcardReviewerPage() {
             <select
               id="review-profile"
               value={selectedProfile}
-              onChange={(event) => setSelectedProfile(event.target.value)}
+              onChange={(event) => {
+                setSelectedProfile(event.target.value);
+                setSelectedFileName("");
+              }}
+              disabled={!hasSavedProfiles}
             >
-              {profiles.map((profile) => (
-                <option key={profile} value={profile}>
-                  {profile}
-                </option>
-              ))}
+              {hasSavedProfiles ? (
+                profiles.map((profile) => (
+                  <option key={profile} value={profile}>
+                    {profile}
+                  </option>
+                ))
+              ) : (
+                <option value="">No saved profiles found</option>
+              )}
             </select>
 
             <label className="field-label" htmlFor="review-file">
@@ -326,15 +455,30 @@ export function FlashcardReviewerPage() {
               id="review-file"
               value={selectedFileName}
               onChange={(event) => setSelectedFileName(event.target.value)}
+              disabled={!hasSavedProfiles || !hasSavedFiles}
             >
-              {savedFiles.map((file) => (
-                <option key={file.file_path} value={file.file_name}>
-                  {file.file_name}
+              {hasSavedFiles ? (
+                savedFiles.map((file) => (
+                  <option key={file.file_path} value={file.file_name}>
+                    {file.file_name}
+                  </option>
+                ))
+              ) : (
+                <option value="">
+                  {hasSavedProfiles ? "No CSV files found for selected profile" : "Select profile first"}
                 </option>
-              ))}
+              )}
             </select>
+            <p className="muted small">
+              Profiles: {profiles.length} | CSV files: {savedFiles.length}
+            </p>
 
-            <button type="button" className="primary" onClick={handleLoadSavedDataset} disabled={isLoading}>
+            <button
+              type="button"
+              className="primary"
+              onClick={handleLoadSavedDataset}
+              disabled={isLoading || !hasSavedProfiles || !selectedFileName}
+            >
               {isLoading ? "Loading..." : "Load Reviewer Dataset"}
             </button>
           </>
@@ -355,8 +499,16 @@ export function FlashcardReviewerPage() {
           </>
         )}
 
-        {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
-        {actionMessage ? <p className="muted">{actionMessage}</p> : null}
+        {errorMessage ? (
+          <p className="error-message" role="alert">
+            {errorMessage}
+          </p>
+        ) : null}
+        {actionMessage ? (
+          <p className="muted status-message" aria-live="polite">
+            {actionMessage}
+          </p>
+        ) : null}
       </section>
 
       {summary ? (
@@ -387,27 +539,32 @@ export function FlashcardReviewerPage() {
                   type="button"
                   className="secondary"
                   onClick={handlePrevious}
-                  disabled={currentCard.index <= 0}
+                  disabled={currentBatchStart <= 0}
                 >
-                  Previous
+                  Previous 5
                 </button>
                 <span>
-                  Card {currentCard.index + 1} / {currentCard.total}
+                  Cards {currentBatchStart + 1}-{currentBatchEnd + 1} / {currentCard.total} (selected{" "}
+                  {currentCard.index + 1})
                 </span>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={handleNext}
-                  disabled={currentCard.index >= currentCard.total - 1}
-                >
-                  Next
-                </button>
-                <button type="button" className="primary" onClick={() => setShowBack((prev) => !prev)}>
-                  {showBack ? "Show Front" : "Flip Card"}
-                </button>
-              </div>
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleNext}
+                disabled={currentBatchEnd >= currentCard.total - 1}
+              >
+                Next 5
+              </button>
+              <button
+                type="button"
+                className={isEditMode ? "primary" : "secondary"}
+                onClick={() => setIsEditMode((previous) => !previous)}
+              >
+                {isEditMode ? "Disable Edit Mode" : "Enable Edit Mode"}
+              </button>
+            </div>
 
-              {!showBack ? (
+              <div className="review-card-grid">
                 <div className="card-front">
                   <h2>{currentCard.front.word || "(no word)"}</h2>
                   <p>{currentCard.front.pronunciation}</p>
@@ -417,11 +574,24 @@ export function FlashcardReviewerPage() {
                   <p className="muted">Profile: {currentCard.front.profile_id}</p>
                   {currentCard.front.audio ? <audio controls src={currentCard.front.audio} /> : null}
                 </div>
-              ) : (
+
                 <div className="card-back">
                   <h3>Meanings</h3>
                   <p>{currentCard.back.meaning_english}</p>
                   <p>{currentCard.back.meaning_spanish}</p>
+
+                  {Object.keys(currentCard.back.details || {}).length > 0 ? (
+                    <>
+                      <h3>Details</h3>
+                      <ul className="plain-list">
+                        {Object.entries(currentCard.back.details).map(([key, value]) => (
+                          <li key={key}>
+                            <strong>{key}:</strong> {value}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
 
                   <h3>Relationships</h3>
                   <p>Synonyms: {currentCard.back.relationships.synonyms.join(" | ")}</p>
@@ -453,104 +623,127 @@ export function FlashcardReviewerPage() {
                       <p className="muted">
                         Render status: {currentCard.back.image.image_render_status || "unknown"}
                       </p>
+                      {currentCard.back.image.image_term_type ? (
+                        <p className="muted">Image term type: {currentCard.back.image.image_term_type}</p>
+                      ) : null}
+                      {currentCard.back.image.visual_description ? (
+                        <p className="muted">Visual description: {currentCard.back.image.visual_description}</p>
+                      ) : null}
+                      {currentCard.back.image.master_image_prompt ? (
+                        <p className="muted">Master prompt: {currentCard.back.image.master_image_prompt}</p>
+                      ) : null}
+                      {currentCard.back.image.image_generation_skip_reason ? (
+                        <p className="muted">
+                          Generation skip reason: {currentCard.back.image.image_generation_skip_reason}
+                        </p>
+                      ) : null}
+                      {currentCard.back.image.image_render_skip_reason ? (
+                        <p className="muted">
+                          Render skip reason: {currentCard.back.image.image_render_skip_reason}
+                        </p>
+                      ) : null}
                     </div>
                   ) : null}
 
-                  <div className="panel-card">
-                    <h3>Edit Generated Content</h3>
-                    <label className="field-label" htmlFor="edit-meaning-english">
-                      Meaning (English)
-                    </label>
-                    <textarea
-                      id="edit-meaning-english"
-                      value={editMeaningEnglish}
-                      rows={2}
-                      onChange={(event) => setEditMeaningEnglish(event.target.value)}
-                    />
+                  {isEditMode ? (
+                    <>
+                      <div className="panel-card">
+                        <h3>Edit Generated Content</h3>
+                        <label className="field-label" htmlFor="edit-meaning-english">
+                          Meaning (English)
+                        </label>
+                        <textarea
+                          id="edit-meaning-english"
+                          value={editMeaningEnglish}
+                          rows={2}
+                          onChange={(event) => setEditMeaningEnglish(event.target.value)}
+                        />
 
-                    <label className="field-label" htmlFor="edit-meaning-spanish">
-                      Meaning (Spanish)
-                    </label>
-                    <textarea
-                      id="edit-meaning-spanish"
-                      value={editMeaningSpanish}
-                      rows={2}
-                      onChange={(event) => setEditMeaningSpanish(event.target.value)}
-                    />
+                        <label className="field-label" htmlFor="edit-meaning-spanish">
+                          Meaning (Spanish)
+                        </label>
+                        <textarea
+                          id="edit-meaning-spanish"
+                          value={editMeaningSpanish}
+                          rows={2}
+                          onChange={(event) => setEditMeaningSpanish(event.target.value)}
+                        />
 
-                    <label className="field-label" htmlFor="edit-master-image-prompt">
-                      Master Image Prompt
-                    </label>
-                    <textarea
-                      id="edit-master-image-prompt"
-                      value={editMasterImagePrompt}
-                      rows={3}
-                      onChange={(event) => setEditMasterImagePrompt(event.target.value)}
-                    />
+                        <label className="field-label" htmlFor="edit-master-image-prompt">
+                          Master Image Prompt
+                        </label>
+                        <textarea
+                          id="edit-master-image-prompt"
+                          value={editMasterImagePrompt}
+                          rows={3}
+                          onChange={(event) => setEditMasterImagePrompt(event.target.value)}
+                        />
 
-                    <label className="field-label" htmlFor="edit-visual-description">
-                      Visual Description
-                    </label>
-                    <textarea
-                      id="edit-visual-description"
-                      value={editVisualDescription}
-                      rows={2}
-                      onChange={(event) => setEditVisualDescription(event.target.value)}
-                    />
+                        <label className="field-label" htmlFor="edit-visual-description">
+                          Visual Description
+                        </label>
+                        <textarea
+                          id="edit-visual-description"
+                          value={editVisualDescription}
+                          rows={2}
+                          onChange={(event) => setEditVisualDescription(event.target.value)}
+                        />
 
-                    <div className="inline-controls wrap">
-                      <button
-                        type="button"
-                        className="primary"
-                        onClick={handleSaveEdits}
-                        disabled={isSavingEdits}
-                      >
-                        {isSavingEdits ? "Saving..." : "Save Edits"}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => {
-                          void handleRerunGeneration("full");
-                        }}
-                        disabled={isRerunning}
-                      >
-                        {isRerunning ? "Rerunning..." : "Rerun Full Generation"}
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => {
-                          void handleRerunGeneration("image");
-                        }}
-                        disabled={isRerunning}
-                      >
-                        {isRerunning ? "Rerunning..." : "Rerun Image"}
-                      </button>
-                    </div>
-                  </div>
+                        <div className="inline-controls wrap">
+                          <button
+                            type="button"
+                            className="primary"
+                            onClick={handleSaveEdits}
+                            disabled={isSavingEdits}
+                          >
+                            {isSavingEdits ? "Saving..." : "Save Edits"}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => {
+                              void handleRerunGeneration("full");
+                            }}
+                            disabled={isRerunning}
+                          >
+                            {isRerunning ? "Rerunning..." : "Rerun Full Generation"}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => {
+                              void handleRerunGeneration("image");
+                            }}
+                            disabled={isRerunning}
+                          >
+                            {isRerunning ? "Rerunning..." : "Rerun Image"}
+                          </button>
+                        </div>
+                      </div>
 
-                  <div className="panel-card">
-                    <h3>Custom Image Override</h3>
-                    <input
-                      type="file"
-                      accept=".png,.jpg,.jpeg,.webp,.gif"
-                      onChange={(event) => setCustomImageFile(event.target.files?.[0] ?? null)}
-                    />
-                    <div className="inline-controls wrap">
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={handleUploadCustomImage}
-                        disabled={!customImageFile || isUploadingImage}
-                      >
-                        {isUploadingImage ? "Uploading..." : "Upload Custom Image"}
-                      </button>
-                      <span className="muted small">{customImageFile?.name || "No file selected"}</span>
-                    </div>
-                  </div>
+                      <div className="panel-card">
+                        <h3>Custom Image Override</h3>
+                        <input
+                          type="file"
+                          accept=".png,.jpg,.jpeg,.webp,.gif"
+                          onChange={(event) => setCustomImageFile(event.target.files?.[0] ?? null)}
+                        />
+                        <div className="inline-controls wrap">
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={handleUploadCustomImage}
+                            disabled={!customImageFile || isUploadingImage}
+                          >
+                            {isUploadingImage ? "Uploading..." : "Upload Custom Image"}
+                          </button>
+                          <span className="muted small">{customImageFile?.name || "No file selected"}</span>
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
                 </div>
-              )}
+              </div>
             </>
           ) : null}
         </section>

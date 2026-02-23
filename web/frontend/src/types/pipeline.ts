@@ -392,6 +392,60 @@ export interface FlashcardCardMutationResponse {
   applied_transforms?: string[];
 }
 
+
+export type GeneratedRowRerunProcess =
+  | "full"
+  | "meaning_sentences"
+  | "audio_word"
+  | "audio_sentences"
+  | "image_prompt"
+  | "image_renderer"
+  | "image";
+
+export interface GeneratedRowSummary {
+  row_id: number;
+  run_id: string;
+  run_status: RunStatus;
+  profile_id: string;
+  row_index: number;
+  word: string;
+  created_at: string;
+  meaning_english: string;
+  meaning_spanish: string;
+  picture: string;
+  picture_url: string;
+  image_render_status: string;
+}
+
+export interface GeneratedRowsResponse {
+  count: number;
+  next: string | null;
+  previous: string | null;
+  results: GeneratedRowSummary[];
+}
+
+export interface GeneratedRowDetail {
+  row_id: number;
+  run_id: string;
+  run_status: RunStatus;
+  profile_id: string;
+  row_index: number;
+  word: string;
+  created_at: string;
+  row_data: Record<string, string | number | boolean | null>;
+  card: FlashcardCardResponse;
+}
+
+export interface GeneratedRowDetailResponse {
+  row: GeneratedRowDetail;
+}
+
+export interface GeneratedRowMutationResponse {
+  row: GeneratedRowDetail;
+  rerun_process?: GeneratedRowRerunProcess;
+  applied_transforms?: string[];
+}
+
 export interface WordExtractorSummary {
   initial_count: number;
   filtered_count: number;

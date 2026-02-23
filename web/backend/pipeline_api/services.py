@@ -34,6 +34,7 @@ from .models import PipelineResultRow, PipelineRun, PipelineRunEvent, RunStatus
 
 RUN_GROUP_PREFIX = "pipeline_run_"
 PIPELINE_TERMINAL_STATUSES = {RunStatus.SUCCESS, RunStatus.ERROR, RunStatus.CANCELED}
+HIDDEN_RESULT_COLUMNS = {"pinyin", "translation"}
 
 
 class RunPausedError(RuntimeError):
@@ -80,7 +81,24 @@ def _to_json_safe(value: Any) -> Any:
 
 
 def _dataframe_row_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
-    return {str(key): _to_json_safe(value) for key, value in row.items()}
+    return {
+        str(key): _to_json_safe(value)
+        for key, value in row.items()
+        if str(key) not in HIDDEN_RESULT_COLUMNS
+    }
+
+
+def _sanitize_pipeline_results_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    removable_columns = [
+        column
+        for column in HIDDEN_RESULT_COLUMNS
+        if column in df.columns
+    ]
+    if not removable_columns:
+        return df
+    return df.drop(columns=removable_columns)
 
 
 def _build_runtime_transformations(
@@ -497,7 +515,9 @@ def execute_pipeline_run(run_id: str) -> None:
         execution_mode="parallel_word_branches",
     )
 
-    _persist_result_rows(run, run_result.df_results)
+    sanitized_df_results = _sanitize_pipeline_results_df(run_result.df_results)
+    run_result.df_results = sanitized_df_results
+    _persist_result_rows(run, sanitized_df_results)
 
     saved_results_path = Path(run_result.saved_results_csv)
     _rewrite_results_csv_from_db(run, saved_results_path)

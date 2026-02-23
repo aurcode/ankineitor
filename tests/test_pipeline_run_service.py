@@ -398,6 +398,68 @@ def test_execute_pipeline_run_parallel_word_branches_emits_running_and_queue_dat
     assert llm_meaning_second_start < image_renderer_first_complete
 
 
+def test_parallel_word_branches_does_not_skip_llm_sentence_audio_for_new_words(
+    tmp_path, monkeypatch
+):
+    class LLMAudioTransformation(Transformation):
+        pipeline_stage = "llm"
+        required_input_columns = ("sentence_1",)
+
+        def __init__(self):
+            self.calls = 0
+
+        @property
+        def column_name(self) -> str:
+            return "sentence_1_audio"
+
+        def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+            self.calls += 1
+            output = df.copy()
+            output["sentence_1_audio"] = output["sentence_1"].astype(str).map(
+                lambda sentence: f"A:{sentence}"
+            )
+            return output
+
+    service = PipelineRunService()
+    db_client = _FakePipelineDBClient()
+    llm_audio_transform = LLMAudioTransformation()
+    all_transforms = {
+        "LLM (Meanings/Sentences)": _DummyLlmMeaningTransform(),
+        "LLM Audio (Sentences)": llm_audio_transform,
+    }
+    monkeypatch.setattr(result_store, "PIPELINE_RESULTS_ROOT", tmp_path / "results")
+    progress_events = []
+
+    prepared = service.prepare_pipeline_run(
+        pipeline_db_client=db_client,
+        all_transformations=all_transforms,
+        ordered_transform_names=[
+            "LLM (Meanings/Sentences)",
+            "LLM Audio (Sentences)",
+        ],
+        llm_profile_id="lotm_zh_en_es",
+        llm_source_language="Chinese (Simplified)",
+    )
+
+    run_result = service.execute_pipeline_run(
+        prepared_run=prepared,
+        words=["你好"],
+        llm_profile_id="lotm_zh_en_es",
+        progress_callback=progress_events.append,
+        execution_mode="parallel_word_branches",
+    )
+
+    llm_audio_starts = [
+        event
+        for event in progress_events
+        if event.get("event") == "transform_start"
+        and event.get("transform_name") == "LLMAudioTransformation"
+    ]
+    assert len(llm_audio_starts) == 1
+    assert llm_audio_transform.calls == 1
+    assert run_result.df_results.loc[0, "sentence_1_audio"] == "A:S:你好"
+
+
 def test_execute_pipeline_run_parallel_word_branches_skips_cached_partial_word(
     tmp_path, monkeypatch
 ):

@@ -19,6 +19,9 @@ interface PipelineFlowProps {
   nodeDurations: Record<string, number>;
   nodeRuntime: Record<string, NodeRuntimeState>;
   activeNodes: string[];
+  onRerunNode?: (transformName: string) => void;
+  rerunPendingNode?: string | null;
+  disableRerun?: boolean;
 }
 
 const DEPENDENCY_RULES: Record<string, string[]> = {
@@ -37,19 +40,19 @@ interface GraphPoint {
 }
 
 const STATUS_COLORS: Record<NodeExecutionStatus, string> = {
-  idle: "#6b7280",
-  queued: "#7c5f00",
-  running: "#0b7285",
-  success: "#256d1b",
-  error: "#b3261e",
+  idle: "#8092c9",
+  queued: "#f0ba5d",
+  running: "#3ee0ff",
+  success: "#3cd392",
+  error: "#ff7f95",
 };
 
 const STATUS_BG: Record<NodeExecutionStatus, string> = {
-  idle: "#f3f4f6",
-  queued: "#fff7d6",
-  running: "#dff6fb",
-  success: "#e3f8de",
-  error: "#fde4e1",
+  idle: "rgba(31, 46, 91, 0.9)",
+  queued: "rgba(86, 64, 24, 0.9)",
+  running: "rgba(20, 60, 103, 0.92)",
+  success: "rgba(18, 75, 57, 0.9)",
+  error: "rgba(89, 26, 45, 0.9)",
 };
 
 export function resolveDependencyEdges(transformNames: string[]): DependencyEdge[] {
@@ -218,6 +221,8 @@ export function PipelineFlow(props: PipelineFlowProps) {
       const queueLabel = queuePreview
         ? `${queuedWords.length} (${queuePreview}${queuedWords.length > 2 ? ", ..." : ""})`
         : wordsLeftLabel;
+      const isRerunPending = props.rerunPendingNode === name;
+      const canRerun = Boolean(props.onRerunNode) && !props.disableRerun;
 
       return {
         id: name,
@@ -242,25 +247,46 @@ export function PipelineFlow(props: PipelineFlowProps) {
               <div className="flow-node-progress">
                 <span>queue: {queueLabel}</span>
               </div>
+              <div className="flow-node-actions">
+                <button
+                  type="button"
+                  className="flow-node-rerun nodrag nopan"
+                  disabled={!canRerun || isRerunPending}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    props.onRerunNode?.(name);
+                  }}
+                >
+                  {isRerunPending ? "Rerunning..." : "Rerun Block"}
+                </button>
+              </div>
             </div>
           ),
         },
         style: {
-          borderRadius: 14,
+          borderRadius: 16,
           border: `2px solid ${STATUS_COLORS[status]}`,
           background: STATUS_BG[status],
-          width: 190,
-          minHeight: 128,
+          color: "#ecf3ff",
+          width: 208,
+          minHeight: 132,
           fontSize: 12,
-          boxShadow: status === "running" ? "0 0 0 3px rgba(11, 114, 133, 0.18)" : "none",
+          boxShadow:
+            status === "running"
+              ? "0 0 0 1px rgba(62, 224, 255, 0.58), 0 0 0 4px rgba(62, 224, 255, 0.18), 0 16px 30px rgba(2, 8, 28, 0.56)"
+              : "0 12px 26px rgba(3, 9, 30, 0.52)",
         },
       };
     });
   }, [
     props.activeNodes,
+    props.disableRerun,
     props.nodeDurations,
     props.nodeRuntime,
     props.nodeStatuses,
+    props.onRerunNode,
+    props.rerunPendingNode,
     graphLayout,
     orderedTransformNames,
   ]);
@@ -278,11 +304,11 @@ export function PipelineFlow(props: PipelineFlowProps) {
         animated: props.activeNodes.includes(source),
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: props.activeNodes.includes(source) ? "#0b7285" : "#9ca3af",
+          color: props.activeNodes.includes(source) ? "#2edbff" : "#6f80b1",
         },
         style: {
-          strokeWidth: props.activeNodes.includes(source) ? 3 : 2,
-          stroke: props.activeNodes.includes(source) ? "#0b7285" : "#9ca3af",
+          strokeWidth: props.activeNodes.includes(source) ? 2.8 : 1.9,
+          stroke: props.activeNodes.includes(source) ? "#2edbff" : "#6f80b1",
         },
       });
     }
@@ -291,9 +317,9 @@ export function PipelineFlow(props: PipelineFlowProps) {
 
   return (
     <div className="flow-wrapper">
-      <ReactFlow nodes={nodes} edges={edges} fitView>
-        <MiniMap pannable zoomable />
-        <Background color="#e7eef1" gap={20} />
+      <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.16 }}>
+        <MiniMap pannable zoomable nodeColor="#435ba8" maskColor="rgba(7, 12, 33, 0.78)" />
+        <Background color="#223a77" gap={24} size={1} />
         <Controls />
       </ReactFlow>
     </div>

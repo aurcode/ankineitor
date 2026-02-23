@@ -8,6 +8,7 @@ import {
   getPipelineRun,
   getPipelineRunResults,
   listPipelineRuns,
+  rerunPipelineRunBlock,
 } from "../api/pipeline";
 import { PipelineFlow } from "../components/PipelineFlow";
 import { PipelineRunForm } from "../components/PipelineRunForm";
@@ -115,6 +116,7 @@ export function PipelinePage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [categoryUpdating, setCategoryUpdating] = useState(false);
   const [csvDownloading, setCsvDownloading] = useState(false);
+  const [rerunBlockPending, setRerunBlockPending] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
   const wsCleanupRef = useRef<(() => void) | null>(null);
@@ -375,6 +377,31 @@ export function PipelinePage() {
     }
   };
 
+  const handleRerunBlock = async (transformName: string) => {
+    if (!run) {
+      return;
+    }
+
+    setRerunBlockPending(transformName);
+    setErrorMessage("");
+    try {
+      const rerun = await rerunPipelineRunBlock({
+        runId: run.id,
+        transformName,
+      });
+      setRun(rerun);
+      setRunHistory((previous) => upsertRunHistory(previous, rerun));
+      setResults(null);
+      setResultsPage(1);
+      setResultsSearch("");
+      setGraphState(initializeGraphState(rerun.ordered_transform_names));
+    } catch (error) {
+      setErrorMessage(String(error));
+    } finally {
+      setRerunBlockPending(null);
+    }
+  };
+
   const handleSelectHistoryRun = async (runId: string) => {
     setErrorMessage("");
     try {
@@ -393,8 +420,7 @@ export function PipelinePage() {
   return (
     <div className="workspace-page">
       <header className="page-header">
-        <h1>Ankineitor Pipeline Workspace</h1>
-        <p>React Flow visualization with live pipeline execution events via Django Channels.</p>
+        <h1>Pipeline</h1>
       </header>
 
       <main className="page-grid">
@@ -413,11 +439,15 @@ export function PipelinePage() {
 
         <section className="flow-section">
           <div className="flow-header">
-            <h2>Execution Graph</h2>
-            <p className="muted">
-              Run ID: {run?.id ?? "not started"}
-              {run?.status ? ` | Status: ${run.status}` : ""}
-            </p>
+            <h2>Execution</h2>
+            <div className="inline-controls wrap flow-status-line">
+              <span className="status-chip" data-status={run?.status ?? "idle"}>
+                {run?.status ?? "idle"}
+              </span>
+              <span className="flow-run-id">
+                <code>{run?.id ?? "not-started"}</code>
+              </span>
+            </div>
           </div>
           <PipelineFlow
             transformNames={run?.ordered_transform_names ?? []}
@@ -425,6 +455,9 @@ export function PipelinePage() {
             nodeDurations={graphState.nodeDurations}
             nodeRuntime={graphState.nodeRuntime}
             activeNodes={graphState.activeNodes}
+            onRerunNode={run ? handleRerunBlock : undefined}
+            rerunPendingNode={rerunBlockPending}
+            disableRerun={!run || Boolean(rerunBlockPending)}
           />
         </section>
 
@@ -436,66 +469,6 @@ export function PipelinePage() {
           events={graphState.eventLog}
         />
       </main>
-
-      <section className="panel-block history-section">
-        <div className="inline-controls wrap">
-          <h2>Prediction History</h2>
-          <label className="field-label" htmlFor="history-status-filter">
-            Status
-          </label>
-          <select
-            id="history-status-filter"
-            value={historyStatus}
-            onChange={(event) => setHistoryStatus(event.target.value as HistoryStatusFilter)}
-          >
-            {HISTORY_STATUS_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              void fetchRunHistory(historyStatus);
-            }}
-            disabled={historyLoading}
-          >
-            {historyLoading ? "Refreshing..." : "Refresh"}
-          </button>
-        </div>
-        <p className="muted small">
-          Open any previous run to inspect graph events and download historical CSV results.
-        </p>
-        {runHistory.length === 0 ? (
-          <p className="muted">No past runs found for this account.</p>
-        ) : (
-          <div className="history-list">
-            {runHistory.map((historyRun) => (
-              <button
-                key={historyRun.id}
-                type="button"
-                className={
-                  run?.id === historyRun.id ? "history-item active secondary" : "history-item secondary"
-                }
-                onClick={() => {
-                  void handleSelectHistoryRun(historyRun.id);
-                }}
-              >
-                <span className="history-item-id">{historyRun.id}</span>
-                <span className="history-item-meta">
-                  {historyRun.status} | {historyRun.profile_id} | words {historyRun.total_input_words}
-                </span>
-                <span className="history-item-meta">
-                  created {formatTimestamp(historyRun.created_at)} | completed{" "}
-                  {formatTimestamp(historyRun.completed_at)}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
 
       <ResultsTable
         runId={run?.id ?? null}
@@ -519,6 +492,70 @@ export function PipelinePage() {
           {parsePageFromUrl(results?.previous) ?? "none"}
         </span>
       </footer>
+
+      <details className="panel-block history-toggle">
+        <summary className="history-toggle-summary">
+          <span>Prediction History</span>
+          <span className="muted small">
+            {runHistory.length} run{runHistory.length === 1 ? "" : "s"}
+          </span>
+        </summary>
+        <div className="history-toggle-body">
+          <div className="inline-controls wrap">
+            <label className="field-label" htmlFor="history-status-filter">
+              Status
+            </label>
+            <select
+              id="history-status-filter"
+              value={historyStatus}
+              onChange={(event) => setHistoryStatus(event.target.value as HistoryStatusFilter)}
+            >
+              {HISTORY_STATUS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                void fetchRunHistory(historyStatus);
+              }}
+              disabled={historyLoading}
+            >
+              {historyLoading ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
+          {runHistory.length === 0 ? (
+            <p className="muted">No past runs found.</p>
+          ) : (
+            <div className="history-list">
+              {runHistory.map((historyRun) => (
+                <button
+                  key={historyRun.id}
+                  type="button"
+                  className={
+                    run?.id === historyRun.id ? "history-item active secondary" : "history-item secondary"
+                  }
+                  onClick={() => {
+                    void handleSelectHistoryRun(historyRun.id);
+                  }}
+                >
+                  <span className="history-item-id">{historyRun.id}</span>
+                  <span className="history-item-meta">
+                    {historyRun.status} | {historyRun.profile_id} | words {historyRun.total_input_words}
+                  </span>
+                  <span className="history-item-meta">
+                    created {formatTimestamp(historyRun.created_at)} | completed{" "}
+                    {formatTimestamp(historyRun.completed_at)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </details>
     </div>
   );
 }

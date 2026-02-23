@@ -41,10 +41,6 @@ export function PipelineRunForm(props: PipelineRunFormProps) {
     <form className="run-form" onSubmit={handleSubmit}>
       <section>
         <h2>Run Pipeline</h2>
-        <p className="muted">
-          Choose a profile, optional transforms, and submit words to execute the existing
-          pipeline logic in background workers.
-        </p>
       </section>
 
       <label className="field-label" htmlFor="profile-select">
@@ -112,7 +108,11 @@ export function PipelineRunForm(props: PipelineRunFormProps) {
         placeholder={"你好\n谢谢\n苹果"}
       />
 
-      {props.errorMessage ? <p className="error-message">{props.errorMessage}</p> : null}
+      {props.errorMessage ? (
+        <p className="error-message" role="alert">
+          {props.errorMessage}
+        </p>
+      ) : null}
 
       <button type="submit" className="primary" disabled={props.isSubmitting}>
         {props.isSubmitting ? "Submitting..." : "Run Pipeline"}

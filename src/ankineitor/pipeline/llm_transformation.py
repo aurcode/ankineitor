@@ -127,6 +127,8 @@ class LLMTransformation(Transformation):
         "sentences_rendered_html",
         "example_sentences",
         "improved_meaning",
+        "pinyin",
+        "translation",
     }
 
     def __init__(

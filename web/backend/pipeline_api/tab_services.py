@@ -38,6 +38,8 @@ from .models import (
     FlashcardDataset,
     FlashcardDatasetSourceType,
     GeneratedAnkiDeck,
+    PipelineResultRow,
+    PipelineRun,
 )
 
 
@@ -51,6 +53,20 @@ FLASHCARD_ASSET_ALLOWED_DIRS = (
     Path(settings.MEDIA_ROOT),
 )
 FLASHCARD_CUSTOM_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif"]
+GENERATED_ROW_RERUN_PROCESSES = {
+    "full": [],
+    "meaning_sentences": ["LLM (Meanings/Sentences)"],
+    "audio_word": ["Audio"],
+    "audio_sentences": ["LLM (Meanings/Sentences)", "LLM Audio (Sentences)"],
+    "image_prompt": ["LLM Image Prompt (Visual Translator)"],
+    "image_renderer": ["LLM Image Renderer (Master Prompt)"],
+    "image": [
+        "LLM Image Prompt (Visual Translator)",
+        "LLM Image Renderer (Master Prompt)",
+    ],
+}
+_SENTENCE_AUDIO_COLUMN_PATTERN = re.compile(r"^sentence_\d+_audio$")
+HIDDEN_RESULT_COLUMNS = {"pinyin", "translation"}
 
 
 def _safe_text(value: Any) -> str:
@@ -1019,6 +1035,371 @@ def rerun_flashcard_card_generation(
         "rerun_mode": normalized_mode,
         "applied_transforms": resolved_selected_transforms,
     }
+
+
+def _normalize_result_row_payload(
+    payload: Dict[str, Any],
+    *,
+    fallback_timestamp: str,
+) -> Dict[str, Any]:
+    normalized = {
+        str(key): _to_json_safe(value)
+        for key, value in dict(payload or {}).items()
+        if str(key) not in HIDDEN_RESULT_COLUMNS
+    }
+    if not _safe_text(normalized.get("timestamp")):
+        normalized["timestamp"] = fallback_timestamp
+    return normalized
+
+
+def _rewrite_pipeline_run_results_csv(run: PipelineRun) -> None:
+    csv_output_path = _safe_text(run.csv_output_path)
+    if not csv_output_path:
+        return
+
+    csv_path = Path(csv_output_path)
+    if not csv_path.is_absolute():
+        csv_path = PROJECT_ROOT / csv_path
+    resolved_csv_path = csv_path.resolve()
+    if PROJECT_ROOT.resolve() not in resolved_csv_path.parents:
+        logger.warning(
+            "Skipping CSV rewrite for run {} because path is outside workspace: {}",
+            run.id,
+            resolved_csv_path,
+        )
+        return
+
+    records = [
+        dict(row.row_data or {})
+        for row in PipelineResultRow.objects.filter(run=run).order_by("row_index")
+    ]
+    if not records:
+        return
+
+    resolved_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(records).to_csv(resolved_csv_path, index=False)
+
+
+def _build_generated_row_detail_payload(row: PipelineResultRow) -> Dict[str, Any]:
+    fallback_timestamp = (
+        row.created_at.isoformat() if row.created_at else timezone.now().isoformat()
+    )
+    normalized_row_data = _normalize_result_row_payload(
+        dict(row.row_data or {}),
+        fallback_timestamp=fallback_timestamp,
+    )
+    row.row_data = normalized_row_data
+    row.word = _safe_text(normalized_row_data.get("word")) or _safe_text(row.word)
+
+    total_in_run = PipelineResultRow.objects.filter(run=row.run).count()
+    card_payload = _build_flashcard_card_payload(
+        row=pd.Series(normalized_row_data),
+        index=int(row.row_index or 0),
+        total=max(total_in_run, 1),
+    )
+    return {
+        "row_id": int(row.id),
+        "run_id": str(row.run_id),
+        "run_status": _safe_text(row.run.status),
+        "profile_id": _safe_text(normalized_row_data.get("profile_id")) or _safe_text(row.run.profile_id),
+        "row_index": int(row.row_index or 0),
+        "word": _safe_text(row.word),
+        "created_at": row.created_at.isoformat() if row.created_at else "",
+        "row_data": normalized_row_data,
+        "card": card_payload,
+    }
+
+
+def get_generated_row_detail(*, row_id: int, owner) -> Dict[str, Any]:
+    row = PipelineResultRow.objects.select_related("run").get(pk=row_id, run__owner=owner)
+    return _build_generated_row_detail_payload(row)
+
+
+def update_generated_row_fields(
+    *,
+    row_id: int,
+    owner,
+    updates: Dict[str, Any],
+) -> Dict[str, Any]:
+    row = PipelineResultRow.objects.select_related("run").get(pk=row_id, run__owner=owner)
+
+    normalized_updates: Dict[str, Any] = {}
+    for raw_key, raw_value in dict(updates or {}).items():
+        key = _safe_text(raw_key)
+        if not key:
+            continue
+        normalized_updates[key] = raw_value
+    if not normalized_updates:
+        raise ValueError("Provide at least one field to update.")
+
+    fallback_timestamp = (
+        row.created_at.isoformat() if row.created_at else timezone.now().isoformat()
+    )
+    row_payload = _normalize_result_row_payload(
+        dict(row.row_data or {}),
+        fallback_timestamp=fallback_timestamp,
+    )
+    row_payload.update(normalized_updates)
+    row_payload = _normalize_result_row_payload(row_payload, fallback_timestamp=fallback_timestamp)
+
+    normalized_word = _safe_text(row_payload.get("word")) or _safe_text(row.word)
+    row_payload["word"] = normalized_word
+    row.word = normalized_word
+    row.row_data = row_payload
+    row.save(update_fields=["word", "row_data"])
+    _rewrite_pipeline_run_results_csv(row.run)
+    return _build_generated_row_detail_payload(row)
+
+
+def upload_generated_row_custom_image(
+    *,
+    row_id: int,
+    owner,
+    file_name: str,
+    file_bytes: bytes,
+) -> Dict[str, Any]:
+    row = PipelineResultRow.objects.select_related("run").get(pk=row_id, run__owner=owner)
+
+    safe_name = sanitize_filename(file_name)
+    validate_file_upload(
+        _UploadProxy(safe_name, file_bytes),
+        expected_extensions=FLASHCARD_CUSTOM_IMAGE_EXTENSIONS,
+    )
+
+    target_dir = Path(settings.MEDIA_ROOT) / "generated_row_custom_images" / str(row.run_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}_{safe_name}"
+    target_path = target_dir / stored_name
+    target_path.write_bytes(file_bytes)
+
+    try:
+        stored_path = str(target_path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except Exception:
+        stored_path = target_path.as_posix()
+
+    return update_generated_row_fields(
+        row_id=row_id,
+        owner=owner,
+        updates={
+            "picture": stored_path,
+            "image_render_status": "custom_upload",
+            "image_render_skip_reason": "",
+            "image_generation_skip_reason": "",
+        },
+    )
+
+
+def _columns_to_replace_for_generated_rerun(
+    *,
+    process: str,
+    generated_row: Dict[str, Any],
+    current_row: Optional[Dict[str, Any]] = None,
+) -> set[str]:
+    all_generated_columns = {str(column) for column in generated_row.keys()}
+    all_current_columns = {str(column) for column in dict(current_row or {}).keys()}
+    if process == "full":
+        return {
+            column
+            for column in all_generated_columns
+            if column not in {"word", "timestamp", "categories"}
+        }
+    if process == "audio_word":
+        return {"audio"}
+    if process == "audio_sentences":
+        generated_audio_columns = {
+            column
+            for column in all_generated_columns
+            if _SENTENCE_AUDIO_COLUMN_PATTERN.match(column)
+        }
+        existing_audio_columns = {
+            column
+            for column in all_current_columns
+            if _SENTENCE_AUDIO_COLUMN_PATTERN.match(column)
+        }
+        return generated_audio_columns | existing_audio_columns
+    if process == "image_prompt":
+        return {
+            "image_term_type",
+            "visual_description",
+            "master_image_prompt",
+            "image_generation_skip_reason",
+        }
+    if process == "image_renderer":
+        return {"picture", "image_render_status", "image_render_skip_reason"}
+    if process == "image":
+        return {
+            "image_term_type",
+            "visual_description",
+            "master_image_prompt",
+            "image_generation_skip_reason",
+            "picture",
+            "image_render_status",
+            "image_render_skip_reason",
+        }
+    if process == "meaning_sentences":
+        llm_columns = {
+            "pinyin",
+            "part_of_speech",
+            "character_breakdown",
+            "detailed_explanation_english",
+            "detailed_explanation_spanish",
+            "word_with_stress",
+            "romanization",
+            "aspect_pair",
+            "register",
+            "grammar_formula",
+            "mnemonic_hook_spanish",
+            "piter_summer_variant",
+            "edge_case_notes",
+            "synonyms_json",
+            "antonyms_json",
+            "collocations_json",
+            "sentences_json",
+            "synonyms_rendered",
+            "antonyms_rendered",
+            "collocations_rendered",
+            "meaning_english",
+            "meaning_spanish",
+        }
+        return {
+            column
+            for column in all_generated_columns
+            if column in llm_columns
+            or (
+                column.startswith("sentence_")
+                and not _SENTENCE_AUDIO_COLUMN_PATTERN.match(column)
+            )
+        }
+    return set()
+
+
+def _rerun_process_dataframe_without_cache(
+    *,
+    prepared_run,
+    word: str,
+    transform_names: List[str],
+) -> pd.DataFrame:
+    transform_by_name = {
+        str(name): transform
+        for name, transform in zip(
+            list(getattr(prepared_run, "ordered_transform_names", []) or []),
+            list(getattr(prepared_run, "selected_transforms", []) or []),
+        )
+    }
+
+    rerun_df = pd.DataFrame([{"word": word}])
+    for transform_name in transform_names:
+        transform = transform_by_name.get(str(transform_name))
+        if transform is None:
+            continue
+        output_df = transform.apply(rerun_df)
+        if output_df is None:
+            continue
+        rerun_df = output_df
+    return rerun_df
+
+
+def rerun_generated_row_process(
+    *,
+    row_id: int,
+    owner,
+    process: str,
+) -> Dict[str, Any]:
+    row = PipelineResultRow.objects.select_related("run").get(pk=row_id, run__owner=owner)
+    normalized_process = _safe_text(process).lower() or "full"
+    if normalized_process not in GENERATED_ROW_RERUN_PROCESSES:
+        supported = ", ".join(sorted(GENERATED_ROW_RERUN_PROCESSES.keys()))
+        raise ValueError(f"Unsupported process '{normalized_process}'. Supported: {supported}.")
+
+    fallback_timestamp = (
+        row.created_at.isoformat() if row.created_at else timezone.now().isoformat()
+    )
+    row_payload = _normalize_result_row_payload(
+        dict(row.row_data or {}),
+        fallback_timestamp=fallback_timestamp,
+    )
+    word = _safe_text(row_payload.get("word")) or _safe_text(row.word)
+    if not word:
+        raise ValueError("Selected DB row does not contain a word value.")
+
+    profile_id = _safe_text(row_payload.get("profile_id")) or _safe_text(row.run.profile_id)
+    if not profile_id:
+        profile_id = DEFAULT_LLM_PROFILE_ID
+    try:
+        selected_profile = get_llm_profile(profile_id)
+        profile_id = selected_profile.profile_id
+    except Exception:
+        selected_profile = get_llm_profile(DEFAULT_LLM_PROFILE_ID)
+        profile_id = selected_profile.profile_id
+
+    selected_transform_names = list(GENERATED_ROW_RERUN_PROCESSES[normalized_process])
+
+    from .services import get_pipeline_runtime, resolve_ordered_transform_names
+
+    runtime = get_pipeline_runtime()
+    (
+        resolved_selected_transforms,
+        ordered_transform_names,
+        source_language,
+    ) = resolve_ordered_transform_names(
+        profile_id=profile_id,
+        selected_transform_names=selected_transform_names,
+    )
+
+    from ankineitor.application import PipelineRunService
+
+    pipeline_service = PipelineRunService()
+    prepared_run = pipeline_service.prepare_pipeline_run(
+        pipeline_db_client=runtime.pipeline_db_client,
+        all_transformations=runtime.all_transformations,
+        ordered_transform_names=ordered_transform_names,
+        llm_profile_id=profile_id,
+        llm_source_language=source_language,
+        transform_factory=runtime.transform_factory,
+        table_name="hanzi_processing",
+    )
+    if normalized_process in {"audio_word", "audio_sentences"}:
+        rerun_df_results = _rerun_process_dataframe_without_cache(
+            prepared_run=prepared_run,
+            word=word,
+            transform_names=selected_transform_names,
+        )
+    else:
+        run_result = pipeline_service.execute_pipeline_run(
+            prepared_run=prepared_run,
+            words=[word],
+            llm_profile_id=profile_id,
+            progress_callback=None,
+            dev_mode=False,
+            execution_mode="parallel_word_branches",
+        )
+        rerun_df_results = run_result.df_results
+
+    if rerun_df_results.empty:
+        raise ValueError("Rerun did not produce any result rows.")
+
+    generated_row = rerun_df_results.iloc[0].to_dict()
+    columns_to_replace = _columns_to_replace_for_generated_rerun(
+        process=normalized_process,
+        generated_row=generated_row,
+        current_row=row_payload,
+    )
+    for column_name in columns_to_replace:
+        row_payload[column_name] = generated_row.get(column_name)
+
+    row_payload["profile_id"] = profile_id
+    row_payload["word"] = word
+    row_payload = _normalize_result_row_payload(row_payload, fallback_timestamp=fallback_timestamp)
+
+    row.word = word
+    row.row_data = row_payload
+    row.save(update_fields=["word", "row_data"])
+    _rewrite_pipeline_run_results_csv(row.run)
+
+    payload = _build_generated_row_detail_payload(row)
+    payload["rerun_process"] = normalized_process
+    payload["applied_transforms"] = resolved_selected_transforms
+    return payload
 
 
 def _records_from_dataframe(df: pd.DataFrame) -> List[Dict[str, Any]]:

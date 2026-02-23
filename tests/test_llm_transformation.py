@@ -363,8 +363,8 @@ class TestLLMTransformationProcess:
                     result = transformation.process_word("набережная")
                     assert result is not None
                     assert result["word_with_stress"] == "набережна́я"
-                    assert result["pinyin"] is None
-                    assert result["translation"] is None
+                    assert "pinyin" not in result
+                    assert "translation" not in result
                     assert result["sentence_1_tts_clean"] == (
                         "В июле мы встретились на набережной перед клубом."
                     )

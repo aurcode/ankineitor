@@ -215,8 +215,10 @@ class TransformationPipeline:
         transform_name = type(transform).__name__
         if transform_name == "LLMAudioTransformation":
             sentence_indexes = set()
+            sentence_audio_indexes = set()
             sentence_pattern = re.compile(r"^sentence_(\d+)$")
             tts_clean_pattern = re.compile(r"^sentence_(\d+)_tts_clean$")
+            sentence_audio_pattern = re.compile(r"^sentence_(\d+)_audio$")
             for column_name, value in row_payload.items():
                 if not self._payload_value_present(value):
                     continue
@@ -228,10 +230,16 @@ class TransformationPipeline:
                 tts_clean_match = tts_clean_pattern.match(normalized_column)
                 if tts_clean_match:
                     sentence_indexes.add(int(tts_clean_match.group(1)))
+                    continue
+                sentence_audio_match = sentence_audio_pattern.match(normalized_column)
+                if sentence_audio_match:
+                    sentence_audio_indexes.add(int(sentence_audio_match.group(1)))
 
             if not sentence_indexes:
-                # Nothing to generate for this row.
-                return True
+                # Parallel mode seeds this check from cached main-table rows that
+                # do not include sentence columns yet. Treat sentence audio as
+                # complete only if sentence audio outputs already exist.
+                return bool(sentence_audio_indexes)
 
             for sentence_index in sorted(sentence_indexes):
                 if not self._payload_value_present(

@@ -99,6 +99,73 @@ describe("App tab navigation", () => {
             },
           });
         }
+        if (url.includes("/api/generated/rows")) {
+          if (url.match(/\/api\/generated\/rows\/\d+/)) {
+            return createMockResponse({
+              row: {
+                row_id: 1,
+                run_id: "run-1",
+                run_status: "success",
+                profile_id: "lotm_zh_en_es",
+                row_index: 0,
+                word: "你好",
+                created_at: "2026-02-22T00:00:00Z",
+                row_data: { word: "你好", meaning_english: "hello", meaning_spanish: "hola" },
+                card: {
+                  index: 0,
+                  total: 1,
+                  front: {
+                    word: "你好",
+                    pronunciation: "",
+                    part_of_speech: "",
+                    register: "",
+                    profile_id: "lotm_zh_en_es",
+                    timestamp: "",
+                    audio: "",
+                  },
+                  back: {
+                    meaning_english: "hello",
+                    meaning_spanish: "hola",
+                    details: {},
+                    relationships: { synonyms: [], antonyms: [], collocations: [] },
+                    sentences: [],
+                    image: {
+                      picture: "",
+                      image_term_type: "",
+                      visual_description: "",
+                      master_image_prompt: "",
+                      image_generation_skip_reason: "",
+                      image_render_status: "",
+                      image_render_skip_reason: "",
+                    },
+                  },
+                  raw_row: { word: "你好" },
+                },
+              },
+            });
+          }
+          return createMockResponse({
+            count: 1,
+            next: null,
+            previous: null,
+            results: [
+              {
+                row_id: 1,
+                run_id: "run-1",
+                run_status: "success",
+                profile_id: "lotm_zh_en_es",
+                row_index: 0,
+                word: "你好",
+                created_at: "2026-02-22T00:00:00Z",
+                meaning_english: "hello",
+                meaning_spanish: "hola",
+                picture: "",
+                picture_url: "",
+                image_render_status: "",
+              },
+            ],
+          });
+        }
         return createMockResponse({});
       }),
     );
@@ -113,7 +180,7 @@ describe("App tab navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign In" }));
 
     expect(
-      await screen.findByRole("heading", { name: "Ankineitor Pipeline Workspace" }),
+      await screen.findByRole("heading", { name: "Pipeline" }),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Anki Deck Generator" }));
@@ -121,6 +188,9 @@ describe("App tab navigation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Flashcard Reviewer" }));
     expect(await screen.findByRole("heading", { name: "Flashcard Reviewer" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Generated Library" }));
+    expect(await screen.findByRole("heading", { name: "Generated Library" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Word Extractor" }));
     expect(await screen.findByRole("heading", { name: "Word Extractor" })).toBeInTheDocument();

@@ -10,15 +10,23 @@ import {
 import { AnkiDeckPage } from "./pages/AnkiDeckPage";
 import { AdminQueueMonitorPage } from "./pages/AdminQueueMonitorPage";
 import { FlashcardReviewerPage } from "./pages/FlashcardReviewerPage";
+import { GeneratedLibraryPage } from "./pages/GeneratedLibraryPage";
 import { PipelinePage } from "./pages/PipelinePage";
 import { WordExtractorPage } from "./pages/WordExtractorPage";
 
-type WorkspaceTab = "pipeline" | "anki" | "reviewer" | "extractor" | "admin-monitor";
+type WorkspaceTab =
+  | "pipeline"
+  | "anki"
+  | "reviewer"
+  | "generated-library"
+  | "extractor"
+  | "admin-monitor";
 
 const TAB_OPTIONS: Array<{ key: WorkspaceTab; label: string }> = [
   { key: "pipeline", label: "Pipeline" },
   { key: "anki", label: "Anki Deck Generator" },
   { key: "reviewer", label: "Flashcard Reviewer" },
+  { key: "generated-library", label: "Generated Library" },
   { key: "extractor", label: "Word Extractor" },
   { key: "admin-monitor", label: "Admin Queue Monitor" },
 ];
@@ -77,7 +85,11 @@ function LoginPanel(props: { onAuthenticated: (username: string, token: string) 
             autoComplete="current-password"
           />
 
-          {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
+          {errorMessage ? (
+            <p className="error-message" role="alert">
+              {errorMessage}
+            </p>
+          ) : null}
           <button type="submit" className="primary" disabled={isSubmitting}>
             {isSubmitting ? "Signing in..." : "Sign In"}
           </button>
@@ -113,18 +125,25 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <nav className="top-tabs" aria-label="Workspace tabs">
-          {TAB_OPTIONS.map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              className={activeTab === tab.key ? "tab-button active" : "tab-button"}
-              onClick={() => setActiveTab(tab.key)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+        <div className="app-nav-block">
+          <div className="app-brand" aria-hidden="true">
+            <span className="app-brand-kicker">Ankineitor</span>
+            <span className="app-brand-subtitle">AI language operations workspace</span>
+          </div>
+          <nav className="top-tabs" aria-label="Workspace tabs">
+            {TAB_OPTIONS.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                className={activeTab === tab.key ? "tab-button active" : "tab-button"}
+                aria-pressed={activeTab === tab.key}
+                onClick={() => setActiveTab(tab.key)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </div>
         <div className="session-chip">
           <span className="muted">Signed in as {authUsername || "user"}</span>
           <button type="button" className="secondary" onClick={handleSignOut}>
@@ -136,6 +155,7 @@ export default function App() {
       {activeTab === "pipeline" ? <PipelinePage /> : null}
       {activeTab === "anki" ? <AnkiDeckPage /> : null}
       {activeTab === "reviewer" ? <FlashcardReviewerPage /> : null}
+      {activeTab === "generated-library" ? <GeneratedLibraryPage /> : null}
       {activeTab === "extractor" ? <WordExtractorPage /> : null}
       {activeTab === "admin-monitor" ? <AdminQueueMonitorPage /> : null}
     </div>

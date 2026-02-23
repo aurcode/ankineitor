@@ -10,6 +10,8 @@ from ankineitor.security import validate_word_input
 
 from .models import BackgroundJob, BackgroundJobEvent, PipelineResultRow, PipelineRun, PipelineRunEvent
 
+HIDDEN_RESULT_COLUMNS = {"pinyin", "translation"}
+
 
 class PipelineRunCreateSerializer(serializers.Serializer):
     profile_id = serializers.CharField(required=False, default=DEFAULT_LLM_PROFILE_ID, max_length=128)
@@ -39,6 +41,10 @@ class PipelineRunCreateSerializer(serializers.Serializer):
                 f"Maximum 1000 words per run. Received {len(words)} words."
             )
         return words
+
+
+class PipelineRunRerunBlockSerializer(serializers.Serializer):
+    transform_name = serializers.CharField(max_length=128)
 
 
 class PipelineRunSummarySerializer(serializers.ModelSerializer):
@@ -96,7 +102,11 @@ class PipelineResultRowSerializer(serializers.ModelSerializer):
     row_data = serializers.SerializerMethodField()
 
     def get_row_data(self, obj: PipelineResultRow) -> dict:
-        payload = dict(obj.row_data or {})
+        payload = {
+            str(key): value
+            for key, value in dict(obj.row_data or {}).items()
+            if str(key) not in HIDDEN_RESULT_COLUMNS
+        }
         existing_timestamp = str(payload.get("timestamp", "") or "").strip()
         if not existing_timestamp and obj.created_at:
             payload["timestamp"] = obj.created_at.isoformat()
@@ -197,6 +207,53 @@ class FlashcardCardRerunSerializer(serializers.Serializer):
     index = serializers.IntegerField(min_value=0, required=False, default=0)
     profile_filter = serializers.CharField(max_length=128, required=False, allow_blank=True)
     mode = serializers.ChoiceField(choices=["full", "image"], required=False, default="full")
+
+
+class GeneratedRowListQuerySerializer(serializers.Serializer):
+    search = serializers.CharField(max_length=256, required=False, allow_blank=True)
+    profile_id = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    run_id = serializers.UUIDField(required=False)
+
+
+class GeneratedRowUpdateSerializer(serializers.Serializer):
+    updates = serializers.DictField(required=True)
+
+    def validate_updates(self, value: Any) -> dict:
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("updates must be an object.")
+        if not value:
+            raise serializers.ValidationError("Provide at least one field in updates.")
+        if len(value) > 200:
+            raise serializers.ValidationError("Too many updated fields (max 200).")
+
+        normalized: dict = {}
+        for raw_key, raw_item in value.items():
+            key = str(raw_key or "").strip()
+            if not key:
+                continue
+            if len(key) > 128:
+                raise serializers.ValidationError(f"Field name '{key}' is too long (max 128).")
+            normalized[key] = raw_item
+
+        if not normalized:
+            raise serializers.ValidationError("Provide at least one valid field key.")
+        return normalized
+
+
+class GeneratedRowRerunSerializer(serializers.Serializer):
+    process = serializers.ChoiceField(
+        choices=[
+            "full",
+            "meaning_sentences",
+            "audio_word",
+            "audio_sentences",
+            "image_prompt",
+            "image_renderer",
+            "image",
+        ],
+        required=False,
+        default="full",
+    )
 
 
 class WordExtractorAnalyzeSerializer(serializers.Serializer):
