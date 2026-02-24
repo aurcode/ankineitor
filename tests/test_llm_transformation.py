@@ -12,6 +12,8 @@ from ankineitor.pipeline.llm_profiles import get_llm_profile
 from ankineitor.pipeline.llm_transformation import (
     LLMTransformation,
     LLMWordPayload,
+    SPSpanishSentencePayload,
+    SPSpanishWordPayload,
     SPRussianSentencePayload,
     SPRussianWordPayload,
     SentencePayload,
@@ -369,6 +371,68 @@ class TestLLMTransformationProcess:
                         "В июле мы встретились на набережной перед клубом."
                     )
                     assert result["sentence_1_romanization"] is not None
+
+    def test_sp_spanish_payload_maps_profile_fields(self, mock_settings):
+        mock_db_client = Mock()
+        mock_db_client.find_record.return_value = None
+        mock_settings.llm_profile_id = "sp_spanish_standard"
+
+        with patch(
+            "ankineitor.pipeline.llm_transformation.get_settings",
+            return_value=mock_settings,
+        ):
+            with patch.object(
+                LLMTransformation, "_build_genai_client", return_value=Mock()
+            ):
+                transformation = LLMTransformation(db_client=mock_db_client)
+
+                payload = SPSpanishWordPayload(
+                    word="quedar",
+                    lemma="quedar",
+                    pronunciation_ipa="/keˈðaɾ/",
+                    syllabification_and_stress="que-DAR (aguda)",
+                    part_of_speech="Verb",
+                    morphological_breakdown="qued- + -ar",
+                    register="Standard",
+                    regional_scope="Pan-Hispanic",
+                    grammar_formula="quedar + con + alguien",
+                    ser_estar_note="",
+                    por_para_note="",
+                    reflexive_variant="quedar/quedarse",
+                    irregular_forms=["quepo (rare)"],
+                    detailed_explanation_english="to stay; to meet up",
+                    detailed_explanation_spanish="permanecer; acordar un encuentro",
+                    common_mistakes=["Confundir quedar con quedarse."],
+                    synonyms=["permanecer"],
+                    antonyms=["irse"],
+                    collocations=["quedar con amigos"],
+                    edge_case_notes="Puede cambiar de significado según la estructura.",
+                    sentences=[
+                        SPSpanishSentencePayload(
+                            target_language_highlighted="Hoy voy a <b>quedar</b> con mis amigos.",
+                            tts_clean_sentence="Hoy voy a quedar con mis amigos.",
+                            target_language_cloze="Hoy voy a ___ con mis amigos.",
+                            sentence_pronunciation_hint="d intervocálica suave",
+                            translation_english="Today I'm meeting up with my friends.",
+                            translation_spanish="Hoy me voy a reunir con mis amigos.",
+                        )
+                    ],
+                )
+
+                with patch.object(
+                    transformation,
+                    "_generate_structured_output",
+                    return_value=payload,
+                ):
+                    result = transformation.process_word("quedar")
+                    assert result is not None
+                    assert result["word_model"] == "quedar"
+                    assert result["romanization"] == "/keˈðaɾ/"
+                    assert result["lemma"] == "quedar"
+                    assert result["regional_scope"] == "Pan-Hispanic"
+                    assert result["sentence_1_pronunciation_hint"] == "d intervocálica suave"
+                    assert "pinyin" not in result
+                    assert "translation" not in result
 
     def test_process_word_handles_generation_error(self, mock_settings):
         mock_db_client = Mock()

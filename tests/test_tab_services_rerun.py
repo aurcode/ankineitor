@@ -75,3 +75,34 @@ def test_rerun_dataframe_without_cache_applies_only_requested_transforms():
     assert audio_transform.calls == 1
     assert sentence_transform.calls == 0
     assert rerun_df.loc[0, "audio"] == "A:你好"
+
+
+def test_rerun_dataframe_without_cache_seeds_existing_row_values():
+    class _InspectorTransform:
+        def __init__(self):
+            self.input_df = None
+
+        def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+            self.input_df = df.copy()
+            return df.copy()
+
+    inspector = _InspectorTransform()
+    prepared_run = SimpleNamespace(
+        ordered_transform_names=["LLM Audio (Sentences)"],
+        selected_transforms=[inspector],
+    )
+
+    rerun_df = _rerun_process_dataframe_without_cache(
+        prepared_run=prepared_run,
+        word="hola",
+        transform_names=["LLM Audio (Sentences)"],
+        seed_row={
+            "sentence_1": "Hola.",
+            "sentence_1_audio": "./my_audio_files/existing.mp3",
+        },
+    )
+
+    assert inspector.input_df is not None
+    assert inspector.input_df.loc[0, "word"] == "hola"
+    assert inspector.input_df.loc[0, "sentence_1_audio"] == "./my_audio_files/existing.mp3"
+    assert rerun_df.loc[0, "sentence_1_audio"] == "./my_audio_files/existing.mp3"

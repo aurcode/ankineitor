@@ -18,6 +18,7 @@ import {
 
 const REVIEW_BATCH_SIZE = 5;
 const REVIEW_BATCH_PRELOAD_PAGES = 2;
+const DEFAULT_REVIEW_PROFILE_ID = "sp_spanish_standard";
 
 export function FlashcardReviewerPage() {
   const [sourceMode, setSourceMode] = useState<"saved" | "upload">("saved");
@@ -29,6 +30,8 @@ export function FlashcardReviewerPage() {
 
   const [summary, setSummary] = useState<FlashcardDatasetSummary | null>(null);
   const [currentCard, setCurrentCard] = useState<FlashcardCardResponse | null>(null);
+  const [currentBatchCards, setCurrentBatchCards] = useState<FlashcardCardResponse[]>([]);
+  const [currentBatchStart, setCurrentBatchStart] = useState(0);
   const [profileFilter, setProfileFilter] = useState("All profiles");
   const [isEditMode, setIsEditMode] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -43,7 +46,7 @@ export function FlashcardReviewerPage() {
   const [actionMessage, setActionMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const cardCacheRef = useRef<Map<string, FlashcardCardResponse>>(new Map());
-  const inFlightCardRequestsRef = useRef<Set<string>>(new Set());
+  const inFlightCardRequestsRef = useRef<Map<string, Promise<FlashcardCardResponse>>>(new Map());
   const hasAutoLoadedSavedDatasetRef = useRef(false);
 
   useEffect(() => {
@@ -57,7 +60,10 @@ export function FlashcardReviewerPage() {
         }
         setProfiles(payload.profiles);
         if (payload.profiles.length > 0) {
-          setSelectedProfile(payload.profiles[0]);
+          const defaultProfile = payload.profiles.includes(DEFAULT_REVIEW_PROFILE_ID)
+            ? DEFAULT_REVIEW_PROFILE_ID
+            : payload.profiles[0];
+          setSelectedProfile(defaultProfile);
         }
       } catch (error) {
         if (active) {
@@ -126,46 +132,69 @@ export function FlashcardReviewerPage() {
     setEditVisualDescription(currentCard.back.image.visual_description || "");
   }, [currentCard?.index, currentCard?.raw_row]);
 
+  const fetchCardWithCache = async (
+    datasetId: string,
+    index: number,
+    filterValue: string,
+  ): Promise<FlashcardCardResponse> => {
+    const safeIndex = Math.max(0, index);
+    const requestKey = buildCardCacheKey(datasetId, safeIndex, filterValue);
+    const cachedCard = cardCacheRef.current.get(requestKey);
+    if (cachedCard) {
+      return cachedCard;
+    }
+
+    const inFlightRequest = inFlightCardRequestsRef.current.get(requestKey);
+    if (inFlightRequest) {
+      return inFlightRequest;
+    }
+
+    const requestPromise = getFlashcardCard({
+        datasetId,
+        index: safeIndex,
+        profileFilter: filterValue,
+      })
+      .then((payload) => {
+        const resolvedKey = buildCardCacheKey(datasetId, payload.index, filterValue);
+        cardCacheRef.current.set(requestKey, payload);
+        cardCacheRef.current.set(resolvedKey, payload);
+        return payload;
+      })
+      .finally(() => {
+        inFlightCardRequestsRef.current.delete(requestKey);
+      });
+
+    inFlightCardRequestsRef.current.set(requestKey, requestPromise);
+    return requestPromise;
+  };
+
   const prefetchCard = async (
     datasetId: string,
     index: number,
     filterValue: string,
   ): Promise<void> => {
-    const safeIndex = Math.max(0, index);
-    const requestKey = buildCardCacheKey(datasetId, safeIndex, filterValue);
-    if (cardCacheRef.current.has(requestKey) || inFlightCardRequestsRef.current.has(requestKey)) {
-      return;
-    }
-
-    inFlightCardRequestsRef.current.add(requestKey);
     try {
-      const payload = await getFlashcardCard({
-        datasetId,
-        index: safeIndex,
-        profileFilter: filterValue,
-      });
-      const resolvedKey = buildCardCacheKey(datasetId, payload.index, filterValue);
-      cardCacheRef.current.set(requestKey, payload);
-      cardCacheRef.current.set(resolvedKey, payload);
+      await fetchCardWithCache(datasetId, index, filterValue);
     } catch {
       // Prefetch errors should not block main reviewer flow.
-    } finally {
-      inFlightCardRequestsRef.current.delete(requestKey);
     }
   };
 
   const prefetchUpcomingBatches = (
     datasetId: string,
-    currentIndex: number,
+    batchStartIndex: number,
     totalCards: number,
     filterValue: string,
   ): void => {
     for (let offset = 1; offset <= REVIEW_BATCH_PRELOAD_PAGES; offset += 1) {
-      const nextIndex = currentIndex + offset * REVIEW_BATCH_SIZE;
-      if (nextIndex >= totalCards) {
+      const nextBatchStart = batchStartIndex + offset * REVIEW_BATCH_SIZE;
+      if (nextBatchStart >= totalCards) {
         break;
       }
-      void prefetchCard(datasetId, nextIndex, filterValue);
+      const nextBatchEnd = Math.min(totalCards - 1, nextBatchStart + REVIEW_BATCH_SIZE - 1);
+      for (let index = nextBatchStart; index <= nextBatchEnd; index += 1) {
+        void prefetchCard(datasetId, index, filterValue);
+      }
     }
   };
 
@@ -176,39 +205,58 @@ export function FlashcardReviewerPage() {
   ): void => {
     const resolvedKey = buildCardCacheKey(datasetId, payload.index, filterValue);
     cardCacheRef.current.set(resolvedKey, payload);
-    setCurrentCard(payload);
-    prefetchUpcomingBatches(datasetId, payload.index, payload.total, filterValue);
-  };
-
-  const loadCard = async (index: number, selectedFilter: string): Promise<void> => {
-    if (!summary) {
-      return;
-    }
-
-    const datasetId = summary.dataset_id;
-    const filterValue = resolveFilterValue(selectedFilter);
-    const safeIndex = Math.max(0, index);
-    const cacheKey = buildCardCacheKey(datasetId, safeIndex, filterValue);
-    const cachedCard = cardCacheRef.current.get(cacheKey);
-    if (cachedCard) {
-      setCurrentCardWithCache(cachedCard, datasetId, filterValue);
-      return;
-    }
-
-    const payload = await getFlashcardCard({
-      datasetId,
-      index: safeIndex,
-      profileFilter: filterValue,
+    const selectedBatchStart = Math.floor(payload.index / REVIEW_BATCH_SIZE) * REVIEW_BATCH_SIZE;
+    setCurrentBatchStart(selectedBatchStart);
+    setCurrentBatchCards((previousCards) => {
+      const cardPosition = previousCards.findIndex((card) => card.index === payload.index);
+      if (cardPosition < 0) {
+        return previousCards;
+      }
+      const updatedCards = [...previousCards];
+      updatedCards[cardPosition] = payload;
+      return updatedCards;
     });
-    setCurrentCardWithCache(payload, datasetId, filterValue);
+    setCurrentCard(payload);
+    prefetchUpcomingBatches(datasetId, selectedBatchStart, payload.total, filterValue);
   };
 
-  const currentBatchStart = currentCard
-    ? Math.floor(currentCard.index / REVIEW_BATCH_SIZE) * REVIEW_BATCH_SIZE
-    : 0;
-  const currentBatchEnd = currentCard
-    ? Math.min(currentCard.total, currentBatchStart + REVIEW_BATCH_SIZE) - 1
-    : 0;
+  const loadBatch = async (
+    startIndex: number,
+    selectedFilter: string,
+    datasetIdOverride?: string,
+  ): Promise<void> => {
+    const datasetId = datasetIdOverride ?? summary?.dataset_id;
+    if (!datasetId) {
+      return;
+    }
+
+    const filterValue = resolveFilterValue(selectedFilter);
+    const firstCard = await fetchCardWithCache(datasetId, Math.max(0, startIndex), filterValue);
+    const batchStart = Math.floor(firstCard.index / REVIEW_BATCH_SIZE) * REVIEW_BATCH_SIZE;
+    const batchEnd = Math.min(firstCard.total - 1, batchStart + REVIEW_BATCH_SIZE - 1);
+    const batchIndices: number[] = [];
+    for (let index = batchStart; index <= batchEnd; index += 1) {
+      batchIndices.push(index);
+    }
+    const cards = await Promise.all(batchIndices.map((index) => fetchCardWithCache(datasetId, index, filterValue)));
+    const orderedCards = [...cards].sort((left, right) => left.index - right.index);
+
+    setCurrentBatchStart(batchStart);
+    setCurrentBatchCards(orderedCards);
+    setCurrentCard((previousCard) => {
+      if (!previousCard) {
+        return orderedCards[0] ?? null;
+      }
+      const matchingCard = orderedCards.find((card) => card.index === previousCard.index);
+      return matchingCard ?? orderedCards[0] ?? null;
+    });
+    prefetchUpcomingBatches(datasetId, batchStart, firstCard.total, filterValue);
+  };
+
+  const currentBatchEnd = currentBatchCards.length > 0
+    ? currentBatchCards[currentBatchCards.length - 1].index
+    : currentBatchStart;
+  const currentTotalCards = currentCard?.total ?? summary?.total_cards ?? 0;
 
   const handleSaveEdits = async () => {
     if (!summary || !currentCard) {
@@ -309,11 +357,7 @@ export function FlashcardReviewerPage() {
       });
       setSummary(dataset);
       setProfileFilter("All profiles");
-      const firstCard = await getFlashcardCard({
-        datasetId: dataset.dataset_id,
-        index: 0,
-      });
-      setCurrentCardWithCache(firstCard, dataset.dataset_id, "");
+      await loadBatch(0, "All profiles", dataset.dataset_id);
       setIsEditMode(false);
       setCustomImageFile(null);
     } catch (error) {
@@ -337,11 +381,7 @@ export function FlashcardReviewerPage() {
       const dataset = await createFlashcardDatasetFromUpload(uploadFile);
       setSummary(dataset);
       setProfileFilter("All profiles");
-      const firstCard = await getFlashcardCard({
-        datasetId: dataset.dataset_id,
-        index: 0,
-      });
-      setCurrentCardWithCache(firstCard, dataset.dataset_id, "");
+      await loadBatch(0, "All profiles", dataset.dataset_id);
       setIsEditMode(false);
       setCustomImageFile(null);
     } catch (error) {
@@ -352,27 +392,28 @@ export function FlashcardReviewerPage() {
   };
 
   const handlePrevious = async () => {
-    if (!currentCard) {
+    if (currentBatchCards.length === 0) {
       return;
     }
-    await loadCard(
+    await loadBatch(
       Math.max(0, currentBatchStart - REVIEW_BATCH_SIZE),
       profileFilter,
     );
   };
 
   const handleNext = async () => {
-    if (!currentCard) {
+    if (currentBatchCards.length === 0 || currentTotalCards === 0) {
       return;
     }
-    await loadCard(
-      Math.min(currentCard.total - 1, currentBatchStart + REVIEW_BATCH_SIZE),
+    await loadBatch(
+      Math.min(currentTotalCards - 1, currentBatchStart + REVIEW_BATCH_SIZE),
       profileFilter,
     );
   };
 
   const handleFilterApply = async () => {
-    await loadCard(0, profileFilter);
+    await loadBatch(0, profileFilter);
+    setIsEditMode(false);
   };
 
   useEffect(() => {
@@ -532,7 +573,7 @@ export function FlashcardReviewerPage() {
             </div>
           ) : null}
 
-          {currentCard ? (
+          {currentBatchCards.length > 0 ? (
             <>
               <div className="inline-controls">
                 <button
@@ -544,205 +585,229 @@ export function FlashcardReviewerPage() {
                   Previous 5
                 </button>
                 <span>
-                  Cards {currentBatchStart + 1}-{currentBatchEnd + 1} / {currentCard.total} (selected{" "}
-                  {currentCard.index + 1})
+                  Cards {currentBatchStart + 1}-{currentBatchEnd + 1} / {currentTotalCards}
+                  {currentCard ? ` (selected ${currentCard.index + 1})` : ""}
                 </span>
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleNext}
-                disabled={currentBatchEnd >= currentCard.total - 1}
-              >
-                Next 5
-              </button>
-              <button
-                type="button"
-                className={isEditMode ? "primary" : "secondary"}
-                onClick={() => setIsEditMode((previous) => !previous)}
-              >
-                {isEditMode ? "Disable Edit Mode" : "Enable Edit Mode"}
-              </button>
-            </div>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleNext}
+                  disabled={currentBatchEnd >= currentTotalCards - 1}
+                >
+                  Next 5
+                </button>
+                <button
+                  type="button"
+                  className={isEditMode ? "primary" : "secondary"}
+                  onClick={() => setIsEditMode((previous) => !previous)}
+                  disabled={!currentCard}
+                >
+                  {isEditMode ? "Disable Edit Mode" : "Enable Edit Mode"}
+                </button>
+              </div>
 
-              <div className="review-card-grid">
-                <div className="card-front">
-                  <h2>{currentCard.front.word || "(no word)"}</h2>
-                  <p>{currentCard.front.pronunciation}</p>
-                  <p className="muted">
-                    {currentCard.front.part_of_speech} {currentCard.front.register}
-                  </p>
-                  <p className="muted">Profile: {currentCard.front.profile_id}</p>
-                  {currentCard.front.audio ? <audio controls src={currentCard.front.audio} /> : null}
-                </div>
-
-                <div className="card-back">
-                  <h3>Meanings</h3>
-                  <p>{currentCard.back.meaning_english}</p>
-                  <p>{currentCard.back.meaning_spanish}</p>
-
-                  {Object.keys(currentCard.back.details || {}).length > 0 ? (
-                    <>
-                      <h3>Details</h3>
-                      <ul className="plain-list">
-                        {Object.entries(currentCard.back.details).map(([key, value]) => (
-                          <li key={key}>
-                            <strong>{key}:</strong> {value}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  ) : null}
-
-                  <h3>Relationships</h3>
-                  <p>Synonyms: {currentCard.back.relationships.synonyms.join(" | ")}</p>
-                  <p>Antonyms: {currentCard.back.relationships.antonyms.join(" | ")}</p>
-                  <p>Collocations: {currentCard.back.relationships.collocations.join(" | ")}</p>
-
-                  <h3>Sentences</h3>
-                  {currentCard.back.sentences.length === 0 ? (
-                    <p className="muted">No sentence data.</p>
-                  ) : (
-                    currentCard.back.sentences.map((sentence) => (
-                      <div key={`s-${sentence.index}`} className="sentence-item">
-                        <p>{sentence.sentence}</p>
-                        <p className="muted">{sentence.translation_english}</p>
-                        <p className="muted">{sentence.translation_spanish}</p>
-                        {sentence.audio ? <audio controls src={sentence.audio} /> : null}
+              <div className="review-batch-list">
+                {currentBatchCards.map((card) => {
+                  const isSelected = currentCard?.index === card.index;
+                  return (
+                    <article
+                      key={`card-${card.index}`}
+                      className={`review-batch-item ${isSelected ? "is-selected" : ""}`}
+                    >
+                      <div className="review-batch-header">
+                        <h2>Card {card.index + 1}</h2>
+                        <button
+                          type="button"
+                          className={isSelected ? "primary" : "secondary"}
+                          onClick={() => setCurrentCard(card)}
+                        >
+                          {isSelected ? "Selected" : "Select For Edit"}
+                        </button>
                       </div>
-                    ))
-                  )}
 
-                  {currentCard.back.image.picture ? (
-                    <div>
-                      <h3>Image</h3>
-                      <img
-                        src={currentCard.back.image.picture_url || currentCard.back.image.picture}
-                        alt="card visual"
-                        className="review-image"
-                      />
-                      <p className="muted">
-                        Render status: {currentCard.back.image.image_render_status || "unknown"}
-                      </p>
-                      {currentCard.back.image.image_term_type ? (
-                        <p className="muted">Image term type: {currentCard.back.image.image_term_type}</p>
-                      ) : null}
-                      {currentCard.back.image.visual_description ? (
-                        <p className="muted">Visual description: {currentCard.back.image.visual_description}</p>
-                      ) : null}
-                      {currentCard.back.image.master_image_prompt ? (
-                        <p className="muted">Master prompt: {currentCard.back.image.master_image_prompt}</p>
-                      ) : null}
-                      {currentCard.back.image.image_generation_skip_reason ? (
-                        <p className="muted">
-                          Generation skip reason: {currentCard.back.image.image_generation_skip_reason}
-                        </p>
-                      ) : null}
-                      {currentCard.back.image.image_render_skip_reason ? (
-                        <p className="muted">
-                          Render skip reason: {currentCard.back.image.image_render_skip_reason}
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : null}
+                      <div className="review-card-grid">
+                        <div className="card-front">
+                          <h2>{card.front.word || "(no word)"}</h2>
+                          <p>{card.front.pronunciation}</p>
+                          <p className="muted">
+                            {card.front.part_of_speech} {card.front.register}
+                          </p>
+                          <p className="muted">Profile: {card.front.profile_id}</p>
+                          {card.front.audio ? <audio controls src={card.front.audio} /> : null}
+                        </div>
 
-                  {isEditMode ? (
-                    <>
-                      <div className="panel-card">
-                        <h3>Edit Generated Content</h3>
-                        <label className="field-label" htmlFor="edit-meaning-english">
-                          Meaning (English)
-                        </label>
-                        <textarea
-                          id="edit-meaning-english"
-                          value={editMeaningEnglish}
-                          rows={2}
-                          onChange={(event) => setEditMeaningEnglish(event.target.value)}
-                        />
+                        <div className="card-back">
+                          <h3>Meanings</h3>
+                          <p>{card.back.meaning_english}</p>
+                          <p>{card.back.meaning_spanish}</p>
 
-                        <label className="field-label" htmlFor="edit-meaning-spanish">
-                          Meaning (Spanish)
-                        </label>
-                        <textarea
-                          id="edit-meaning-spanish"
-                          value={editMeaningSpanish}
-                          rows={2}
-                          onChange={(event) => setEditMeaningSpanish(event.target.value)}
-                        />
+                          {Object.keys(card.back.details || {}).length > 0 ? (
+                            <>
+                              <h3>Details</h3>
+                              <ul className="plain-list">
+                                {Object.entries(card.back.details).map(([key, value]) => (
+                                  <li key={`${card.index}-${key}`}>
+                                    <strong>{key}:</strong> {value}
+                                  </li>
+                                ))}
+                              </ul>
+                            </>
+                          ) : null}
 
-                        <label className="field-label" htmlFor="edit-master-image-prompt">
-                          Master Image Prompt
-                        </label>
-                        <textarea
-                          id="edit-master-image-prompt"
-                          value={editMasterImagePrompt}
-                          rows={3}
-                          onChange={(event) => setEditMasterImagePrompt(event.target.value)}
-                        />
+                          <h3>Relationships</h3>
+                          <p>Synonyms: {card.back.relationships.synonyms.join(" | ")}</p>
+                          <p>Antonyms: {card.back.relationships.antonyms.join(" | ")}</p>
+                          <p>Collocations: {card.back.relationships.collocations.join(" | ")}</p>
 
-                        <label className="field-label" htmlFor="edit-visual-description">
-                          Visual Description
-                        </label>
-                        <textarea
-                          id="edit-visual-description"
-                          value={editVisualDescription}
-                          rows={2}
-                          onChange={(event) => setEditVisualDescription(event.target.value)}
-                        />
+                          <h3>Sentences</h3>
+                          {card.back.sentences.length === 0 ? (
+                            <p className="muted">No sentence data.</p>
+                          ) : (
+                            card.back.sentences.map((sentence) => (
+                              <div key={`${card.index}-s-${sentence.index}`} className="sentence-item">
+                                <p>{sentence.sentence}</p>
+                                <p className="muted">{sentence.translation_english}</p>
+                                <p className="muted">{sentence.translation_spanish}</p>
+                                {sentence.audio ? <audio controls src={sentence.audio} /> : null}
+                              </div>
+                            ))
+                          )}
 
-                        <div className="inline-controls wrap">
-                          <button
-                            type="button"
-                            className="primary"
-                            onClick={handleSaveEdits}
-                            disabled={isSavingEdits}
-                          >
-                            {isSavingEdits ? "Saving..." : "Save Edits"}
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={() => {
-                              void handleRerunGeneration("full");
-                            }}
-                            disabled={isRerunning}
-                          >
-                            {isRerunning ? "Rerunning..." : "Rerun Full Generation"}
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={() => {
-                              void handleRerunGeneration("image");
-                            }}
-                            disabled={isRerunning}
-                          >
-                            {isRerunning ? "Rerunning..." : "Rerun Image"}
-                          </button>
+                          {card.back.image.picture ? (
+                            <div>
+                              <h3>Image</h3>
+                              <img
+                                src={card.back.image.picture_url || card.back.image.picture}
+                                alt={`card ${card.index + 1} visual`}
+                                className="review-image"
+                              />
+                              <p className="muted">
+                                Render status: {card.back.image.image_render_status || "unknown"}
+                              </p>
+                              {card.back.image.image_term_type ? (
+                                <p className="muted">Image term type: {card.back.image.image_term_type}</p>
+                              ) : null}
+                              {card.back.image.visual_description ? (
+                                <p className="muted">Visual description: {card.back.image.visual_description}</p>
+                              ) : null}
+                              {card.back.image.master_image_prompt ? (
+                                <p className="muted">Master prompt: {card.back.image.master_image_prompt}</p>
+                              ) : null}
+                              {card.back.image.image_generation_skip_reason ? (
+                                <p className="muted">
+                                  Generation skip reason: {card.back.image.image_generation_skip_reason}
+                                </p>
+                              ) : null}
+                              {card.back.image.image_render_skip_reason ? (
+                                <p className="muted">
+                                  Render skip reason: {card.back.image.image_render_skip_reason}
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
+
+                          {isEditMode && isSelected ? (
+                            <>
+                              <div className="panel-card">
+                                <h3>Edit Generated Content</h3>
+                                <label className="field-label" htmlFor="edit-meaning-english">
+                                  Meaning (English)
+                                </label>
+                                <textarea
+                                  id="edit-meaning-english"
+                                  value={editMeaningEnglish}
+                                  rows={2}
+                                  onChange={(event) => setEditMeaningEnglish(event.target.value)}
+                                />
+
+                                <label className="field-label" htmlFor="edit-meaning-spanish">
+                                  Meaning (Spanish)
+                                </label>
+                                <textarea
+                                  id="edit-meaning-spanish"
+                                  value={editMeaningSpanish}
+                                  rows={2}
+                                  onChange={(event) => setEditMeaningSpanish(event.target.value)}
+                                />
+
+                                <label className="field-label" htmlFor="edit-master-image-prompt">
+                                  Master Image Prompt
+                                </label>
+                                <textarea
+                                  id="edit-master-image-prompt"
+                                  value={editMasterImagePrompt}
+                                  rows={3}
+                                  onChange={(event) => setEditMasterImagePrompt(event.target.value)}
+                                />
+
+                                <label className="field-label" htmlFor="edit-visual-description">
+                                  Visual Description
+                                </label>
+                                <textarea
+                                  id="edit-visual-description"
+                                  value={editVisualDescription}
+                                  rows={2}
+                                  onChange={(event) => setEditVisualDescription(event.target.value)}
+                                />
+
+                                <div className="inline-controls wrap">
+                                  <button
+                                    type="button"
+                                    className="primary"
+                                    onClick={handleSaveEdits}
+                                    disabled={isSavingEdits}
+                                  >
+                                    {isSavingEdits ? "Saving..." : "Save Edits"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() => {
+                                      void handleRerunGeneration("full");
+                                    }}
+                                    disabled={isRerunning}
+                                  >
+                                    {isRerunning ? "Rerunning..." : "Rerun Full Generation"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() => {
+                                      void handleRerunGeneration("image");
+                                    }}
+                                    disabled={isRerunning}
+                                  >
+                                    {isRerunning ? "Rerunning..." : "Rerun Image"}
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="panel-card">
+                                <h3>Custom Image Override</h3>
+                                <input
+                                  type="file"
+                                  accept=".png,.jpg,.jpeg,.webp,.gif"
+                                  onChange={(event) => setCustomImageFile(event.target.files?.[0] ?? null)}
+                                />
+                                <div className="inline-controls wrap">
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={handleUploadCustomImage}
+                                    disabled={!customImageFile || isUploadingImage}
+                                  >
+                                    {isUploadingImage ? "Uploading..." : "Upload Custom Image"}
+                                  </button>
+                                  <span className="muted small">{customImageFile?.name || "No file selected"}</span>
+                                </div>
+                              </div>
+                            </>
+                          ) : null}
                         </div>
                       </div>
-
-                      <div className="panel-card">
-                        <h3>Custom Image Override</h3>
-                        <input
-                          type="file"
-                          accept=".png,.jpg,.jpeg,.webp,.gif"
-                          onChange={(event) => setCustomImageFile(event.target.files?.[0] ?? null)}
-                        />
-                        <div className="inline-controls wrap">
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={handleUploadCustomImage}
-                            disabled={!customImageFile || isUploadingImage}
-                          >
-                            {isUploadingImage ? "Uploading..." : "Upload Custom Image"}
-                          </button>
-                          <span className="muted small">{customImageFile?.name || "No file selected"}</span>
-                        </div>
-                      </div>
-                    </>
-                  ) : null}
-                </div>
+                    </article>
+                  );
+                })}
               </div>
             </>
           ) : null}

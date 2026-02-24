@@ -26,6 +26,7 @@ from .llm_client_factory import (
 from .llm_profiles import (
     LOTM_SCHEMA_ID,
     SP_RUSSIAN_SCHEMA_ID,
+    SP_SPANISH_SCHEMA_ID,
     get_llm_profile,
 )
 from .transformations import Transformation
@@ -110,6 +111,55 @@ class SPRussianWordPayload(BaseModel):
     collocations: List[str] = Field(default_factory=list)
     edge_case_notes: str = ""
     sentences: List[SPRussianSentencePayload] = Field(default_factory=list)
+
+
+class SPSpanishSentencePayload(BaseModel):
+    """Structured sentence entry for standard Spanish profile output."""
+
+    target_language_highlighted: str = Field(
+        description="Sentence containing the highlighted target word."
+    )
+    tts_clean_sentence: str = Field(
+        description="TTS-friendly sentence without markup."
+    )
+    target_language_cloze: str = Field(
+        description="Same sentence with the target word replaced by blanks."
+    )
+    sentence_pronunciation_hint: str = Field(
+        default="",
+        description="Optional pronunciation aid for edge cases.",
+    )
+    translation_english: str = Field(description="Natural English sentence translation.")
+    translation_spanish: str = Field(
+        default="",
+        description="Natural Spanish paraphrase sentence.",
+    )
+
+
+class SPSpanishWordPayload(BaseModel):
+    """Structured standard Spanish profile output for a single target word."""
+
+    word: str
+    lemma: str = ""
+    pronunciation_ipa: str = ""
+    syllabification_and_stress: str = ""
+    part_of_speech: str
+    morphological_breakdown: str
+    register_label: str = Field(alias="register")
+    regional_scope: str = ""
+    grammar_formula: str = ""
+    ser_estar_note: str = ""
+    por_para_note: str = ""
+    reflexive_variant: str = ""
+    irregular_forms: List[str] = Field(default_factory=list)
+    detailed_explanation_english: str
+    detailed_explanation_spanish: str
+    common_mistakes: List[str] = Field(default_factory=list)
+    synonyms: List[str] = Field(default_factory=list)
+    antonyms: List[str] = Field(default_factory=list)
+    collocations: List[str] = Field(default_factory=list)
+    edge_case_notes: str = ""
+    sentences: List[SPSpanishSentencePayload] = Field(default_factory=list)
 
 
 class LLMTransformation(Transformation):
@@ -476,6 +526,8 @@ class LLMTransformation(Transformation):
         schema = (self.profile.response_schema or "").strip()
         if schema == SP_RUSSIAN_SCHEMA_ID:
             return SPRussianWordPayload
+        if schema == SP_SPANISH_SCHEMA_ID:
+            return SPSpanishWordPayload
         return LLMWordPayload
 
     def _as_clean_list(self, items: List[str]) -> List[str]:
@@ -524,6 +576,7 @@ class LLMTransformation(Transformation):
             phonetic = str(
                 getattr(sentence, "sentence_pinyin", None)
                 or getattr(sentence, "sentence_romanization", None)
+                or getattr(sentence, "sentence_pronunciation_hint", None)
                 or ""
             ).strip()
             trans_en = str(getattr(sentence, "translation_english", "") or "").strip()
@@ -714,6 +767,103 @@ class LLMTransformation(Transformation):
 
         return result
 
+    def _payload_to_result_sp_spanish(
+        self, safe_word: str, payload_obj: SPSpanishWordPayload
+    ) -> Dict[str, Optional[str]]:
+        normalized_word = (payload_obj.word or "").strip() or safe_word
+        lemma = (payload_obj.lemma or "").strip() or normalized_word
+        pronunciation_ipa = (payload_obj.pronunciation_ipa or "").strip() or None
+        syllabification_and_stress = (
+            (payload_obj.syllabification_and_stress or "").strip() or None
+        )
+        part_of_speech = (payload_obj.part_of_speech or "").strip() or None
+        morphological_breakdown = (
+            (payload_obj.morphological_breakdown or "").strip() or None
+        )
+        register = (payload_obj.register_label or "").strip() or None
+        regional_scope = (payload_obj.regional_scope or "").strip() or None
+        grammar_formula = (payload_obj.grammar_formula or "").strip() or None
+        ser_estar_note = (payload_obj.ser_estar_note or "").strip() or None
+        por_para_note = (payload_obj.por_para_note or "").strip() or None
+        reflexive_variant = (payload_obj.reflexive_variant or "").strip() or None
+        detailed_en = (payload_obj.detailed_explanation_english or "").strip() or None
+        detailed_es = (payload_obj.detailed_explanation_spanish or "").strip() or None
+        edge_case_notes = (payload_obj.edge_case_notes or "").strip() or None
+
+        irregular_forms = self._as_clean_list(payload_obj.irregular_forms)
+        common_mistakes = self._as_clean_list(payload_obj.common_mistakes)
+        synonyms = self._as_clean_list(payload_obj.synonyms)
+        antonyms = self._as_clean_list(payload_obj.antonyms)
+        collocations = self._as_clean_list(payload_obj.collocations)
+        sentences = payload_obj.sentences or []
+
+        sentences_json = json.dumps([s.model_dump() for s in sentences], ensure_ascii=False)
+        payload_json = json.dumps(payload_obj.model_dump(by_alias=True), ensure_ascii=False)
+
+        result: Dict[str, Optional[str]] = {
+            "word": safe_word,
+            "word_model": lemma,
+            "profile_id": self.profile.profile_id,
+            "profile_version": self.profile.prompt_version,
+            "lemma": lemma,
+            "pronunciation_ipa": pronunciation_ipa,
+            "syllabification_and_stress": syllabification_and_stress,
+            "regional_scope": regional_scope,
+            "ser_estar_note": ser_estar_note,
+            "por_para_note": por_para_note,
+            "reflexive_variant": reflexive_variant,
+            "irregular_forms_json": json.dumps(irregular_forms, ensure_ascii=False),
+            "common_mistakes_json": json.dumps(common_mistakes, ensure_ascii=False),
+            "word_with_stress": None,
+            "romanization": pronunciation_ipa,
+            "pinyin": None,
+            "part_of_speech": part_of_speech,
+            "character_breakdown": morphological_breakdown,
+            "aspect_pair": reflexive_variant,
+            "register": register,
+            "grammar_formula": grammar_formula,
+            "detailed_explanation_english": detailed_en,
+            "detailed_explanation_spanish": detailed_es,
+            "meaning_english": detailed_en,
+            "meaning_spanish": detailed_es,
+            "mnemonic_hook_spanish": None,
+            "piter_summer_variant": None,
+            "edge_case_notes": edge_case_notes,
+            "synonyms_json": json.dumps(synonyms, ensure_ascii=False),
+            "antonyms_json": json.dumps(antonyms, ensure_ascii=False),
+            "collocations_json": json.dumps(collocations, ensure_ascii=False),
+            "sentences_json": sentences_json,
+            "synonyms_rendered": " | ".join(synonyms) if synonyms else None,
+            "antonyms_rendered": " | ".join(antonyms) if antonyms else None,
+            "collocations_rendered": " | ".join(collocations) if collocations else None,
+            "sentences_rendered_html": self._build_sentences_rendered_html(sentences),
+            "translation": None,
+            "example_sentences": sentences_json,
+            "improved_meaning": payload_json,
+        }
+
+        for idx, sentence in enumerate(sentences, start=1):
+            result[f"sentence_{idx}"] = (
+                sentence.target_language_highlighted.strip() or None
+            )
+            result[f"sentence_{idx}_tts_clean"] = (
+                sentence.tts_clean_sentence.strip() or None
+            )
+            result[f"sentence_{idx}_cloze"] = (
+                sentence.target_language_cloze.strip() or None
+            )
+            result[f"sentence_{idx}_pronunciation_hint"] = (
+                sentence.sentence_pronunciation_hint.strip() or None
+            )
+            result[f"sentence_{idx}_translation_english"] = (
+                sentence.translation_english.strip() or None
+            )
+            result[f"sentence_{idx}_translation_spanish"] = (
+                sentence.translation_spanish.strip() or None
+            )
+
+        return result
+
     def _payload_to_result(
         self,
         safe_word: str,
@@ -721,6 +871,8 @@ class LLMTransformation(Transformation):
     ) -> Dict[str, Optional[str]]:
         if isinstance(payload_obj, SPRussianWordPayload):
             return self._payload_to_result_sp_russian(safe_word, payload_obj)
+        if isinstance(payload_obj, SPSpanishWordPayload):
+            return self._payload_to_result_sp_spanish(safe_word, payload_obj)
         return self._payload_to_result_lotm(
             safe_word, LLMWordPayload.model_validate(payload_obj)
         )
@@ -944,8 +1096,8 @@ class LLMTransformation(Transformation):
             how="left",
             suffixes=("", "_llm"),
         )
-        if self.profile.response_schema == SP_RUSSIAN_SCHEMA_ID:
-            # Keep Russian output focused: no pinyin/translation columns.
+        if self.profile.response_schema in {SP_RUSSIAN_SCHEMA_ID, SP_SPANISH_SCHEMA_ID}:
+            # Keep non-Chinese output focused: no pinyin/translation columns.
             for col in ("pinyin", "translation"):
                 if col in df.columns:
                     df[col] = None

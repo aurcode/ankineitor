@@ -64,7 +64,7 @@ def get_dependencies():
 
         def build_transformations(
             llm_profile_id: str = DEFAULT_LLM_PROFILE_ID,
-            llm_source_language: str = "Chinese (Simplified)",
+            llm_source_language: str = "",
         ):
             profile_id = (llm_profile_id or DEFAULT_LLM_PROFILE_ID).strip()
             source_language = (
@@ -87,7 +87,9 @@ def get_dependencies():
                     db_client=llm_db,
                     source_language=source_language,
                 ),
-                "LLM Image Renderer (Master Prompt)": LLMImageTransformation(),
+                "LLM Image Renderer (Master Prompt)": LLMImageTransformation(
+                    profile_id=profile_id,
+                ),
                 "LLM Audio (Sentences)": LLMAudioTransformation(
                     audio_creator=audio_creator,
                     source_language=source_language,

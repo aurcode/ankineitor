@@ -46,9 +46,9 @@ class TestSettingsValidation:
             assert "与" in settings.llm_image_do_not_generate_terms
             assert settings.llm_image_model == "gemini-3-pro-image-preview"
             assert settings.llm_image_max_workers == 1
-            assert settings.llm_profile_id == "lotm_zh_en_es"
+            assert settings.llm_profile_id == "sp_spanish_standard"
             assert settings.llm_profile_db_isolation is True
-            assert settings.llm_source_language == "Chinese (Simplified)"
+            assert settings.llm_source_language == "Spanish"
             assert settings.llm_target_language == "english"
             assert settings.llm_secondary_target_language is None
             assert settings.llm_max_retries == 3

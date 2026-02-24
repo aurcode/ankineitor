@@ -104,7 +104,7 @@ def _sanitize_pipeline_results_df(df: pd.DataFrame) -> pd.DataFrame:
 def _build_runtime_transformations(
     *,
     llm_profile_id: str = DEFAULT_LLM_PROFILE_ID,
-    llm_source_language: str = "Chinese (Simplified)",
+    llm_source_language: str = "",
     llm_db_client: SQLAlchemyClient,
     audio_creator: AudioCreator,
 ) -> Dict[str, object]:
@@ -128,7 +128,9 @@ def _build_runtime_transformations(
             db_client=llm_db_client,
             source_language=source_language,
         ),
-        "LLM Image Renderer (Master Prompt)": LLMImageTransformation(),
+        "LLM Image Renderer (Master Prompt)": LLMImageTransformation(
+            profile_id=profile_id,
+        ),
         "LLM Audio (Sentences)": LLMAudioTransformation(
             audio_creator=audio_creator,
             source_language=source_language,
@@ -150,7 +152,7 @@ def get_pipeline_runtime() -> PipelineRuntime:
 
         def _transform_factory(
             llm_profile_id: str = DEFAULT_LLM_PROFILE_ID,
-            llm_source_language: str = "Chinese (Simplified)",
+            llm_source_language: str = "",
         ) -> Dict[str, object]:
             return _build_runtime_transformations(
                 llm_profile_id=llm_profile_id,

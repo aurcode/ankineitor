@@ -6,7 +6,10 @@ from unittest.mock import Mock, patch
 
 from ankineitor.pipeline.llm_audio_transformation import LLMAudioTransformation
 from ankineitor.pipeline.audio_creator import AudioCreator
-from ankineitor.pipeline.llm_profiles import SP_RUSSIAN_PROFILE_ID
+from ankineitor.pipeline.llm_profiles import (
+    SP_RUSSIAN_PROFILE_ID,
+    SP_SPANISH_STANDARD_PROFILE_ID,
+)
 
 
 class TestLLMAudioTransformation:
@@ -325,3 +328,88 @@ class TestLLMAudioTransformation:
         assert mock_create_audio.call_count == 1
         assert seen_voices == ["Chinese (Mandarin)_Mature_Woman"]
         assert llm_audio_transform.audio_creator.minimax_voice_id == previous_voice
+
+    def test_apply_retries_with_previous_voice_when_profile_voice_fails(
+        self, llm_audio_transform
+    ):
+        """If profile voice fails, sentence audio retries once with previous voice."""
+        llm_audio_transform.profile_id = SP_SPANISH_STANDARD_PROFILE_ID
+        llm_audio_transform.source_language = "Spanish"
+        llm_audio_transform.audio_creator.minimax_voice_id = "male-qn-qingse"
+        previous_voice = llm_audio_transform.audio_creator.minimax_voice_id
+
+        df = pd.DataFrame(
+            {
+                "word": ["quedar"],
+                "sentence_1": ["Hoy voy a quedar con mis amigos."],
+            }
+        )
+        seen_voices = []
+
+        def _capture_voice(*args, **kwargs):
+            del args, kwargs
+            seen_voices.append(llm_audio_transform.audio_creator.minimax_voice_id)
+            if llm_audio_transform.audio_creator.minimax_voice_id == "Upset Girl - Soft,Airy,Sweet":
+                return None
+            return "/fake/audio/path.mp3"
+
+        with patch.object(
+            llm_audio_transform.audio_creator,
+            "_create_audio",
+            side_effect=_capture_voice,
+        ) as mock_create_audio:
+            result_df = llm_audio_transform.apply(df)
+
+        assert "sentence_1_audio" in result_df.columns
+        assert result_df["sentence_1_audio"].iloc[0] == "/fake/audio/path.mp3"
+        assert mock_create_audio.call_count == 2
+        assert seen_voices == [
+            "Upset Girl - Soft,Airy,Sweet",
+            previous_voice,
+        ]
+        assert llm_audio_transform.audio_creator.minimax_voice_id == previous_voice
+
+    def test_apply_skips_generation_when_sentence_audio_already_exists(
+        self, llm_audio_transform
+    ):
+        """Existing sentence_N_audio values should be preserved without regenerating."""
+        df = pd.DataFrame(
+            {
+                "word": ["quedar"],
+                "sentence_1": ["Hoy voy a quedar con mis amigos."],
+                "sentence_1_audio": ["/fake/existing/audio.mp3"],
+            }
+        )
+
+        with patch.object(
+            llm_audio_transform.audio_creator,
+            "_create_audio",
+        ) as mock_create_audio:
+            result_df = llm_audio_transform.apply(df)
+
+        assert result_df["sentence_1_audio"].iloc[0] == "/fake/existing/audio.mp3"
+        mock_create_audio.assert_not_called()
+
+    def test_apply_generates_only_missing_sentence_audio_columns(
+        self, llm_audio_transform
+    ):
+        """Generate audio only for sentence indexes missing an audio file path."""
+        df = pd.DataFrame(
+            {
+                "word": ["quedar"],
+                "sentence_1": ["Hoy voy a quedar con mis amigos."],
+                "sentence_1_audio": ["/fake/existing/audio-1.mp3"],
+                "sentence_2": ["Mañana vuelvo a quedar con Ana."],
+            }
+        )
+
+        with patch.object(
+            llm_audio_transform.audio_creator,
+            "_create_audio",
+            return_value="/fake/new/audio-2.mp3",
+        ) as mock_create_audio:
+            result_df = llm_audio_transform.apply(df)
+
+        assert result_df["sentence_1_audio"].iloc[0] == "/fake/existing/audio-1.mp3"
+        assert result_df["sentence_2_audio"].iloc[0] == "/fake/new/audio-2.mp3"
+        mock_create_audio.assert_called_once()

@@ -385,7 +385,12 @@ def resolve_anki_artifact_path(artifact: GeneratedAnkiDeck) -> Path:
 
 
 def list_flashcard_saved_profiles() -> List[str]:
-    return list_saved_profiles()
+    saved_profiles = list_saved_profiles()
+    ordered_profiles = [DEFAULT_LLM_PROFILE_ID]
+    ordered_profiles.extend(
+        profile for profile in saved_profiles if profile != DEFAULT_LLM_PROFILE_ID
+    )
+    return ordered_profiles
 
 
 def list_flashcard_saved_files(profile_id: str) -> List[Dict[str, Any]]:
@@ -698,7 +703,11 @@ def _sentence_entries_from_columns(row: pd.Series) -> List[Dict[str, str]]:
                 "cloze": _safe_text(row.get(f"sentence_{idx}_cloze")),
                 "pronunciation": _first_non_empty(
                     row,
-                    [f"sentence_{idx}_pinyin", f"sentence_{idx}_romanization"],
+                    [
+                        f"sentence_{idx}_pinyin",
+                        f"sentence_{idx}_romanization",
+                        f"sentence_{idx}_pronunciation_hint",
+                    ],
                 ),
                 "translation_english": _safe_text(row.get(f"sentence_{idx}_translation_english")),
                 "translation_spanish": _safe_text(row.get(f"sentence_{idx}_translation_spanish")),
@@ -730,7 +739,12 @@ def _sentence_entries_from_json(row: pd.Series) -> List[Dict[str, str]]:
                     "cloze": _safe_text(item.get("target_language_cloze")),
                     "pronunciation": _first_non_empty(
                         item_series,
-                        ["sentence_pinyin", "sentence_romanization", "romanization"],
+                        [
+                            "sentence_pinyin",
+                            "sentence_romanization",
+                            "sentence_pronunciation_hint",
+                            "romanization",
+                        ],
                     ),
                     "translation_english": _safe_text(item.get("translation_english")),
                     "translation_spanish": _safe_text(item.get("translation_spanish")),
@@ -767,8 +781,17 @@ def _build_flashcard_card_payload(row: pd.Series, index: int, total: int) -> Dic
     }
 
     details = {
+        "lemma": _safe_text(row.get("lemma")),
+        "pronunciation_ipa": _safe_text(row.get("pronunciation_ipa")),
+        "syllabification_and_stress": _safe_text(row.get("syllabification_and_stress")),
+        "regional_scope": _safe_text(row.get("regional_scope")),
         "aspect_pair": _safe_text(row.get("aspect_pair")),
         "grammar_formula": _safe_text(row.get("grammar_formula")),
+        "ser_estar_note": _safe_text(row.get("ser_estar_note")),
+        "por_para_note": _safe_text(row.get("por_para_note")),
+        "reflexive_variant": _safe_text(row.get("reflexive_variant")),
+        "irregular_forms": _safe_text(row.get("irregular_forms_json")),
+        "common_mistakes": _safe_text(row.get("common_mistakes_json")),
         "character_breakdown": _safe_text(row.get("character_breakdown")),
         "mnemonic_hook_spanish": _safe_text(row.get("mnemonic_hook_spanish")),
         "piter_summer_variant": _safe_text(row.get("piter_summer_variant")),
@@ -1238,6 +1261,15 @@ def _columns_to_replace_for_generated_rerun(
         }
     if process == "meaning_sentences":
         llm_columns = {
+            "lemma",
+            "pronunciation_ipa",
+            "syllabification_and_stress",
+            "regional_scope",
+            "ser_estar_note",
+            "por_para_note",
+            "reflexive_variant",
+            "irregular_forms_json",
+            "common_mistakes_json",
             "pinyin",
             "part_of_speech",
             "character_breakdown",
@@ -1278,6 +1310,7 @@ def _rerun_process_dataframe_without_cache(
     prepared_run,
     word: str,
     transform_names: List[str],
+    seed_row: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
     transform_by_name = {
         str(name): transform
@@ -1287,7 +1320,11 @@ def _rerun_process_dataframe_without_cache(
         )
     }
 
-    rerun_df = pd.DataFrame([{"word": word}])
+    seed_payload = {
+        str(key): value for key, value in dict(seed_row or {}).items() if str(key).strip()
+    }
+    seed_payload["word"] = word
+    rerun_df = pd.DataFrame([seed_payload])
     for transform_name in transform_names:
         transform = transform_by_name.get(str(transform_name))
         if transform is None:
@@ -1363,6 +1400,7 @@ def rerun_generated_row_process(
             prepared_run=prepared_run,
             word=word,
             transform_names=selected_transform_names,
+            seed_row=row_payload,
         )
     else:
         run_result = pipeline_service.execute_pipeline_run(

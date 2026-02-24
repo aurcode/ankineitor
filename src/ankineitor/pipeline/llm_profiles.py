@@ -3,11 +3,14 @@
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-DEFAULT_LLM_PROFILE_ID = "lotm_zh_en_es"
+LOTM_ZH_EN_ES_PROFILE_ID = "lotm_zh_en_es"
 SP_RUSSIAN_PROFILE_ID = "sp_russian"
+SP_SPANISH_STANDARD_PROFILE_ID = "sp_spanish_standard"
+DEFAULT_LLM_PROFILE_ID = SP_SPANISH_STANDARD_PROFILE_ID
 
 LOTM_SCHEMA_ID = "lotm_v1"
 SP_RUSSIAN_SCHEMA_ID = "sp_russian_v1"
+SP_SPANISH_SCHEMA_ID = "sp_spanish_v1"
 
 
 @dataclass(frozen=True)
@@ -122,9 +125,82 @@ Strict Constraints & Logic Rules:
 7. Russian Stress Marks: You must include acute accents (´) on the stressed vowel of every Russian word that has more than one syllable, across all Cyrillic and Romanized fields (except tts_clean_sentence)."""
 
 
+SP_SPANISH_STANDARD_PROMPT = """You are an expert language teacher creating advanced Anki flashcard data for a student learning Spanish for standard, everyday communication (espanol estandar y cotidiano), with practical real-life usage.
+
+Analyze the target Spanish word '{word}'.
+
+Return a strictly valid JSON object matching this exact structure, with no markdown formatting or extra text outside the JSON:
+
+{
+  "word": "{word}",
+  "lemma": "Dictionary base form. For verbs use infinitive (e.g., 'ir', 'ponerse').",
+  "pronunciation_ipa": "IPA pronunciation in neutral modern Spanish.",
+  "syllabification_and_stress": "Split into syllables and indicate stress type (aguda/llana/esdrujula/sobreesdrujula), e.g., 'ca-mi-NAR (aguda)'.",
+  "part_of_speech": "Noun (include gender), Verb (include transitivity/reflexive behavior), Adjective, Adverb, Connector, Interjection, etc.",
+  "morphological_breakdown": "Break into meaningful parts (prefix/root/suffix/clitic) when useful. If not useful, explain briefly why.",
+  "register": "Categorize strictly as one of: 'Standard', 'Colloquial', 'Informal Slang', 'Rude', 'Vulgar'. Also explain safe usage context.",
+  "regional_scope": "Indicate whether usage is Pan-Hispanic or region-specific (Spain, Mexico, River Plate, Caribbean, etc.).",
+  "grammar_formula": "If the word requires a structure, write it (e.g., 'depender de + sustantivo/infinitivo', 'ponerse + adjetivo'). Otherwise leave ''.",
+  "ser_estar_note": "If relevant, clarify ser vs estar implications; otherwise ''.",
+  "por_para_note": "If relevant, clarify por vs para implications; otherwise ''.",
+  "reflexive_variant": "If applicable, contrast non-reflexive vs reflexive meaning (e.g., 'ir' vs 'irse'). Otherwise ''.",
+  "irregular_forms": ["List only key irregular forms when relevant (e.g., present yo form, preterite stem, participle). Leave [] if not applicable."],
+  "detailed_explanation_english": "Provide a comprehensive explanation. If multiple meanings/usages exist, list ALL with bullet points formatted with escaped newlines (e.g., '\\n- [Meaning 1...] \\n- [Meaning 2...]'). Include nuance, pragmatics, and common contexts.",
+  "detailed_explanation_spanish": "Provide the same explanation in clear, learner-friendly Spanish (not too advanced), preserving the same bullet formatting.",
+  "common_mistakes": ["List common learner mistakes and how to avoid them. Include confusion cases (false friends, prepositions, wrong register)."],
+  "synonyms": ["List Spanish synonyms that are natural in real life. Include regional limits when needed."],
+  "antonyms": ["List Spanish antonyms when meaningful; otherwise []"],
+  "collocations": ["List common collocations and short chunks used in daily speech."],
+  "edge_case_notes": "Handle edge cases explicitly: accent/diacritic contrasts (tu/tú, el/él), meaning shifts by region, politeness/register risks, or grammatical traps. If none, leave ''.",
+  "sentences": [
+    {
+      "target_language_highlighted": "Example sentence in Spanish with the target word wrapped in HTML bold tags (e.g., '... <b>{word}</b> ...').",
+      "tts_clean_sentence": "Exact same sentence with NO HTML tags and NO markdown, natural Spanish for TTS.",
+      "target_language_cloze": "Exact same sentence but target word replaced by '___'.",
+      "sentence_pronunciation_hint": "Short pronunciation aid only if needed (liaison, stress pitfall, or silent letters). Otherwise ''.",
+      "translation_english": "Natural English translation.",
+      "translation_spanish": "Simple Spanish paraphrase for learner reinforcement."
+    }
+  ]
+}
+
+Strict Constraints & Logic Rules:
+1. Valid JSON only: all strings properly escaped, no unescaped line breaks.
+2. Context must be practical daily life: errands, work/study, friends, family, transport, shopping, appointments, online chat, etc.
+3. Tone should prioritize standard + cotidiano Spanish. Use slang only when truly common and clearly label register/region.
+4. Dynamic sizing: YOU choose the useful number of sentences/synonyms/antonyms/collocations/common_mistakes.
+5. No numbering labels in generated content (never output 'Meaning 1', 'Sentence 1', '1.', etc.).
+6. Proper nouns: tag as Proper Noun, explain usage, and you may leave arrays empty [] if appropriate.
+7. Orthography precision: accents and punctuation must be correct in Spanish output.
+8. Edge-case priority:
+   - Distinguish homographs/diacritic pairs where relevant.
+   - Clarify reflexive vs non-reflexive meaning shifts.
+   - Clarify preposition-governing patterns.
+   - Flag regional-only forms and provide neutral alternative if possible.
+9. Safety/register: if word can sound rude/vulgar, explicitly warn and provide safer alternatives.
+10. TTS field required: every sentence object MUST include 'tts_clean_sentence'."""
+
+
 LLM_PROFILES: Dict[str, LLMProfile] = {
-    DEFAULT_LLM_PROFILE_ID: LLMProfile(
-        profile_id=DEFAULT_LLM_PROFILE_ID,
+    SP_SPANISH_STANDARD_PROFILE_ID: LLMProfile(
+        profile_id=SP_SPANISH_STANDARD_PROFILE_ID,
+        display_name="Spanish Standard/Cotidiano",
+        description=(
+            "Spanish standard everyday learner profile with practical usage, "
+            "EN/ES explanations, edge cases, and daily-life sentence coverage."
+        ),
+        source_language="Spanish",
+        sentence_language="Spanish",
+        secondary_target_language="Spanish",
+        supports_images=True,
+        prompt_template=SP_SPANISH_STANDARD_PROMPT,
+        prompt_version="2026-02-24-v1",
+        response_schema=SP_SPANISH_SCHEMA_ID,
+        default_tts_voice_id="Upset Girl - Soft,Airy,Sweet",
+        always_include_audio_transforms=True,
+    ),
+    LOTM_ZH_EN_ES_PROFILE_ID: LLMProfile(
+        profile_id=LOTM_ZH_EN_ES_PROFILE_ID,
         display_name="LOTM: Chinese to English/Spanish",
         description=(
             "Chinese vocabulary profile for Lord of the Mysteries with detailed "

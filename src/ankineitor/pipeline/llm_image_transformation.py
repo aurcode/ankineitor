@@ -22,6 +22,10 @@ from .llm_client_factory import (
     build_genai_client as _build_genai_client_shared,
     resolve_vertex_credentials as _resolve_vertex_credentials_shared,
 )
+from .llm_profiles import (
+    DEFAULT_LLM_PROFILE_ID,
+    SP_SPANISH_STANDARD_PROFILE_ID,
+)
 from .transformations import Transformation
 
 DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
@@ -55,12 +59,14 @@ class LLMImageTransformation(Transformation):
         model_name: Optional[str] = None,
         output_dir: Optional[str] = None,
         max_retries: int = 3,
+        profile_id: str = DEFAULT_LLM_PROFILE_ID,
     ):
         settings = get_settings()
         self.model_name = _resolve_model_name(
             model_name or settings.llm_image_model,
             default=DEFAULT_IMAGE_MODEL,
         )
+        self.profile_id = (profile_id or DEFAULT_LLM_PROFILE_ID).strip()
         self.requires_master_prompt = True
         self.fallback_output_dir = Path(FALLBACK_IMAGE_OUTPUT_DIR)
         requested_output_dir = Path(output_dir or settings.image_output_dir)
@@ -156,8 +162,16 @@ class LLMImageTransformation(Transformation):
     def _build_prompt(self, master_image_prompt: str) -> str:
         return (master_image_prompt or "").strip()
 
+    def _resolve_generator_id(self) -> str:
+        if self.profile_id == SP_SPANISH_STANDARD_PROFILE_ID:
+            return "spanish_custom_v1"
+        return "default_v1"
+
     def _cache_key(self, word: str, prompt: str) -> str:
-        raw = f"{self.model_name}|{prompt.strip()}|{word.strip()}"
+        raw = (
+            f"{self.model_name}|{self._resolve_generator_id()}|"
+            f"{prompt.strip()}|{word.strip()}"
+        )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
     def _find_cached_image(self, word: str, prompt: str) -> Optional[Path]:
@@ -201,7 +215,7 @@ class LLMImageTransformation(Transformation):
             return ".jpg"
         return extension or ".png"
 
-    def _generate_image(self, prompt: str) -> Tuple[bytes, str]:
+    def _generate_image_default(self, prompt: str) -> Tuple[bytes, str]:
         config = genai_types.GenerateContentConfig(
             temperature=0.2,
             response_modalities=[genai_types.Modality.IMAGE],
@@ -212,6 +226,15 @@ class LLMImageTransformation(Transformation):
             config=config,
         )
         return self._extract_image_bytes(response)
+
+    def _generate_image_spanish_custom(self, prompt: str) -> Tuple[bytes, str]:
+        # Intentionally uses the same generation request for now.
+        return self._generate_image_default(prompt)
+
+    def _generate_image(self, prompt: str) -> Tuple[bytes, str]:
+        if self.profile_id == SP_SPANISH_STANDARD_PROFILE_ID:
+            return self._generate_image_spanish_custom(prompt)
+        return self._generate_image_default(prompt)
 
     def _build_skipped_result(self, word: str, reason: str) -> Dict[str, Optional[str]]:
         return {

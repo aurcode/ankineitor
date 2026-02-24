@@ -1,4 +1,5 @@
 # Custom
+my_image_files
 *.db
 **/*.mp3
 *.sqlite

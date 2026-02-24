@@ -876,6 +876,7 @@ progress::-moz-progress-bar {
 
 .plain-list li {
   line-height: 1.36;
+  overflow-wrap: anywhere;
 }
 
 .status-message {
@@ -1024,6 +1025,7 @@ progress::-moz-progress-bar {
 .card-front p,
 .card-back p {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .card-back h3 {
@@ -1034,6 +1036,42 @@ progress::-moz-progress-bar {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-sm);
+}
+
+.review-batch-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.review-batch-item {
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(165deg, rgba(13, 24, 54, 0.78), rgba(10, 19, 44, 0.74));
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.review-batch-item.is-selected {
+  border-color: rgba(99, 226, 255, 0.58);
+  box-shadow: 0 0 0 1px rgba(99, 226, 255, 0.2), var(--shadow-soft);
+}
+
+.review-batch-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.review-batch-header h2 {
+  margin: 0;
+  font-size: 0.86rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
 }
 
 .sentence-item {
@@ -1400,6 +1438,10 @@ tbody tr:last-child td {
   }
 
   .inline-controls {
+    flex-wrap: wrap;
+  }
+
+  .review-batch-header {
     flex-wrap: wrap;
   }
 }

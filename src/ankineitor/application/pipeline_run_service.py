@@ -373,6 +373,8 @@ class PipelinePreparationService:
                 transform.profile = get_llm_profile(llm_profile_id)
             if isinstance(transform, LLMAudioTransformation):
                 transform.profile_id = llm_profile_id
+            if isinstance(transform, LLMImageTransformation):
+                transform.profile_id = llm_profile_id
 
 
 class PipelineExecutionService:

@@ -60,6 +60,24 @@ class LLMAudioTransformation(Transformation):
             return False
         return bool(str(value).strip())
 
+    def _resolve_sentence_source_series(
+        self,
+        df: pd.DataFrame,
+        sentence_col: str,
+        tts_col: str,
+    ) -> pd.Series:
+        """Resolve per-row source text prioritizing sentence-specific tts_clean values."""
+        if tts_col in df.columns and sentence_col in df.columns:
+            return df.apply(
+                lambda row: row[tts_col]
+                if self._has_text(row[tts_col])
+                else row[sentence_col],
+                axis=1,
+            )
+        if tts_col in df.columns:
+            return df[tts_col]
+        return df[sentence_col]
+
     @property
     def column_name(self) -> str:
         """Returns the primary column name, though this creates multiple columns"""
@@ -104,8 +122,11 @@ class LLMAudioTransformation(Transformation):
 
         profile_voice = self._resolve_profile_voice()
         previous_voice = self.audio_creator.minimax_voice_id
+        fallback_voice_id: Optional[str] = None
         if profile_voice:
             self.audio_creator.minimax_voice_id = profile_voice
+            if previous_voice and previous_voice != profile_voice:
+                fallback_voice_id = previous_voice
 
         try:
             # Generate audio for each sentence column
@@ -117,26 +138,34 @@ class LLMAudioTransformation(Transformation):
                     logger.info(f"Creating audio column '{audio_col}' for {sentence_col}...")
                     tqdm.pandas(desc=f"Generating audio for {sentence_col}")
 
-                    # Prefer sentence-specific TTS-clean text when available and non-empty.
-                    # Fallback row-by-row to sentence_N if tts_clean is missing/empty.
-                    if tts_col in df.columns and sentence_col in df.columns:
-                        source_series = df.apply(
-                            lambda row: row[tts_col]
-                            if self._has_text(row[tts_col])
-                            else row[sentence_col],
-                            axis=1,
-                        )
-                    elif tts_col in df.columns:
-                        source_series = df[tts_col]
-                    else:
-                        source_series = df[sentence_col]
-
-                    # Create audio files for each sentence
-                    df[audio_col] = source_series.progress_apply(
-                        lambda sentence: self._create_sentence_audio(sentence, language=tts_language)
-                        if self._has_text(sentence)
-                        else None
+                    source_series = self._resolve_sentence_source_series(
+                        df=df,
+                        sentence_col=sentence_col,
+                        tts_col=tts_col,
                     )
+                    if audio_col in df.columns:
+                        output_series = df[audio_col].copy()
+                    else:
+                        output_series = pd.Series(index=df.index, dtype=object)
+
+                    missing_mask = ~output_series.apply(self._has_text)
+                    if missing_mask.any():
+                        generated_series = source_series[missing_mask].progress_apply(
+                            lambda sentence: self._create_sentence_audio_with_voice_fallback(
+                                sentence,
+                                language=tts_language,
+                                fallback_voice_id=fallback_voice_id,
+                            )
+                            if self._has_text(sentence)
+                            else None
+                        )
+                        output_series.loc[missing_mask] = generated_series
+                    else:
+                        logger.info(
+                            f"Skipping generation for '{audio_col}': existing audio already present."
+                        )
+
+                    df[audio_col] = output_series
 
                     # Log some sample results for debugging
                     sample_results = df[audio_col].dropna().head(3)
@@ -148,6 +177,35 @@ class LLMAudioTransformation(Transformation):
         logger.info(f"Output DataFrame columns after LLM Audio: {list(df.columns)}")
         logger.info("LLM Audio transformation applied successfully")
         return df
+
+    def _create_sentence_audio_with_voice_fallback(
+        self,
+        sentence: str,
+        language: Optional[str] = None,
+        fallback_voice_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Try sentence audio with the active profile voice, then retry once with a fallback voice.
+        """
+        current_voice = str(self.audio_creator.minimax_voice_id or "").strip()
+        audio_path = self._create_sentence_audio(sentence, language=language)
+        if audio_path or not fallback_voice_id:
+            return audio_path
+
+        fallback = str(fallback_voice_id).strip()
+        if not fallback or fallback == current_voice:
+            return audio_path
+
+        logger.warning(
+            "LLM sentence audio retry with fallback voice '{}' after failure with profile voice '{}'.",
+            fallback,
+            current_voice,
+        )
+        self.audio_creator.minimax_voice_id = fallback
+        try:
+            return self._create_sentence_audio(sentence, language=language)
+        finally:
+            self.audio_creator.minimax_voice_id = current_voice
 
     def _create_sentence_audio(
         self, sentence: str, language: Optional[str] = None
