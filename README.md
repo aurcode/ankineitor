@@ -1,3 +1,5 @@
+
+
 # Ankineitor 🤖
 
 Ankineitor is a powerful, configurable tool designed to automate the creation of Anki flashcard decks, primarily for language learning. It transforms a simple list of words into a rich, multimedia Anki deck, complete with translations, Pinyin, audio, and AI-generated example sentences.
@@ -66,6 +68,9 @@ The repository now includes a migration path that keeps Streamlit running while 
 Run all services:
 
 ```bash
+# Apply database migrations locally (required for the Django backend)
+python web/backend/manage.py migrate
+
 docker-compose up --build app backend worker redis frontend
 ```
 
